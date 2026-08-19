@@ -19,4 +19,4 @@ db-migrate:
 # Run seed SQL
 db-seed:
 	@echo "Applying seed data from ./seeds/seed.sql"
-	docker compose exec -T db psql -v ON_ERROR_STOP=1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -f /seeds/seed.sql
+	docker compose exec -T db bash -lc 'psql -v ON_ERROR_STOP=1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -f /seeds/seed.sql'

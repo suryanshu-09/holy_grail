@@ -168,7 +168,7 @@ Verified: all Phase 0 checklist items present and services started (Postgres wit
 
 ---
 
-# 6. Phase 1 — Database Foundation
+# 6. Phase 1 — Database Foundation (Completed)
 
 ## Goal
 
@@ -337,6 +337,8 @@ make db-seed
 ```
 
 and get a fully usable development database.
+
+Completed: 2026-08-19T12:32:19+05:30
 
 ---
 
