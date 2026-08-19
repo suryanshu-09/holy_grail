@@ -308,17 +308,17 @@ Do not hard-code a dimension until the embedding model has been chosen.
 
 ## Tasks
 
-- [ ] Design ER diagram
-- [ ] Create migrations
-- [ ] Enable pgvector
-- [ ] Create indexes
-- [ ] Create foreign keys
-- [ ] Create uniqueness constraints
-- [ ] Create timestamps
-- [ ] Create migration rollback support
-- [ ] Test clean database creation
-- [ ] Test migration rollback
-- [ ] Add seed data
+- [x] Design ER diagram
+- [x] Create migrations
+- [x] Enable pgvector
+- [x] Create indexes
+- [x] Create foreign keys
+- [x] Create uniqueness constraints
+- [x] Create timestamps
+- [x] Create migration rollback support
+- [x] Test clean database creation
+- [x] Test migration rollback
+- [x] Add seed data
 
 ---
 
