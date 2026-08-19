@@ -79,7 +79,7 @@ Quiz
 
 Architecture, stack, and repository layout were moved to `ARCHITECTURE.md`.
 
-# 5. Phase 0 — Project Setup
+# 5. Phase 0 — Project Setup (Completed)
 
 ## Goal
 
@@ -91,23 +91,23 @@ Create a clean repository with the frontend, backend, database, and development 
 
 ### Repository
 
-- [ ] Create Git repository
-- [ ] Create `README.md`
-- [ ] Create `PLAN.md`
-- [ ] Create `.gitignore`
-- [ ] Create `.env.example`
-- [ ] Create `Makefile`
-- [ ] Establish directory structure
+- [x] Create Git repository
+- [x] Create `README.md`
+- [x] Create `PLAN.md`
+- [x] Create `.gitignore`
+- [x] Create `.env.example`
+- [x] Create `Makefile`
+- [x] Establish directory structure
 
 ### Go
 
-- [ ] Initialize Go module
-- [ ] Create `cmd/api`
-- [ ] Create `internal/`
-- [ ] Create configuration package
-- [ ] Create logging setup
-- [ ] Create basic HTTP server
-- [ ] Add health endpoint
+- [x] Initialize Go module
+- [x] Create `cmd/api`
+- [x] Create `internal/`
+- [x] Create configuration package
+- [x] Create logging setup
+- [x] Create basic HTTP server
+- [x] Add health endpoint
 
 Example:
 
@@ -125,23 +125,23 @@ Expected:
 
 ### Next.js
 
-- [ ] Initialize Next.js application
-- [ ] Configure TypeScript
-- [ ] Configure Tailwind
-- [ ] Configure shadcn/ui
-- [ ] Create base layout
-- [ ] Create home page
-- [ ] Create API client layer
+- [x] Initialize Next.js application
+- [x] Configure TypeScript
+- [x] Configure Tailwind
+- [x] Configure shadcn/ui
+- [x] Create base layout
+- [x] Create home page
+- [x] Create API client layer
 
 ### Docker
 
 At this stage Docker Compose should contain **only PostgreSQL**.
 
-- [ ] Create `docker-compose.yml`
-- [ ] Add PostgreSQL + pgvector
-- [ ] Add persistent volume
-- [ ] Add healthcheck
-- [ ] Configure database environment variables
+- [x] Create `docker-compose.yml`
+- [x] Add PostgreSQL + pgvector
+- [x] Add persistent volume
+- [x] Add healthcheck
+- [x] Configure database environment variables
 
 Example architecture:
 
@@ -156,11 +156,15 @@ Do not add Redis yet.
 
 ## Completion Criteria
 
-- [ ] `docker compose up` starts PostgreSQL
-- [ ] Go API starts locally
-- [ ] Next.js starts locally
-- [ ] Frontend can reach Go `/health`
-- [ ] Git repository is cleanly organized
+- [x] `docker compose up` starts PostgreSQL
+- [x] Go API starts locally
+- [x] Next.js starts locally
+- [x] Frontend can reach Go `/health`
+- [x] Git repository is cleanly organized
+
+Completed: 2026-08-19T12:09:02+05:30
+
+Verified: all Phase 0 checklist items present and services started (Postgres with pgvector via docker compose, Next.js dev server, Go API with /health).
 
 ---
 
