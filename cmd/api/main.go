@@ -14,6 +14,7 @@ import (
 	"github.com/suryanshu-09/holy_grail/internal/config"
 	"github.com/suryanshu-09/holy_grail/internal/database"
 	"github.com/suryanshu-09/holy_grail/internal/documents"
+	"github.com/suryanshu-09/holy_grail/internal/extraction"
 	"github.com/suryanshu-09/holy_grail/internal/logging"
 	"github.com/suryanshu-09/holy_grail/internal/questions"
 	"github.com/suryanshu-09/holy_grail/internal/storage"
@@ -45,11 +46,29 @@ func main() {
 		os.Exit(1)
 	}
 
+	extractor, err := extraction.NewService(cfg.DataDir)
+	if err != nil {
+		logger.Error("failed to initialise extraction service", "error", err)
+		os.Exit(1)
+	}
+	if ocr, ocrErr := extraction.NewTesseractOCR(); ocrErr == nil {
+		extractor = extractor.WithOCRer(ocr)
+	} else {
+		logger.Warn("OCR fallback disabled", "reason", ocrErr)
+	}
+
+	extractionSvc, err := extraction.NewExtractionService(cfg.DataDir, extractor, documentRepo)
+	if err != nil {
+		logger.Error("failed to initialise extraction pipeline", "error", err)
+		os.Exit(1)
+	}
+
 	deps := apihttp.RouterDeps{
-		DB:        db,
-		Documents: documents.NewService(documentRepo, store),
-		Questions: questions.NewService(questionRepo),
-		Topics:    topics.NewService(topicRepo),
+		DB:         db,
+		Documents:  documents.NewService(documentRepo, store),
+		Extraction: extractionSvc,
+		Questions:  questions.NewService(questionRepo),
+		Topics:     topics.NewService(topicRepo),
 	}
 
 	server := &http.Server{

@@ -88,6 +88,19 @@ RETURNING created_at, updated_at`
 	return nil
 }
 
+// UpdateStatus sets the status column of one document. The updated_at trigger
+// refreshes the timestamp. It returns apperr.ErrNotFound when the id is unknown.
+func (r *repository) UpdateStatus(ctx context.Context, id string, status string) error {
+	res, err := r.db.ExecContext(ctx, "UPDATE documents SET status = $1 WHERE id = $2", status, id)
+	if err != nil {
+		return fmt.Errorf("documents: update status: %w", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return apperr.ErrNotFound
+	}
+	return nil
+}
+
 // GetByID returns a single document by ID or apperr.ErrNotFound.
 func (r *repository) GetByID(ctx context.Context, id string) (Document, error) {
 	var d Document

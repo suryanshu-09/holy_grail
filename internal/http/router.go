@@ -6,6 +6,7 @@ import (
 
 	"github.com/suryanshu-09/holy_grail/internal/config"
 	"github.com/suryanshu-09/holy_grail/internal/documents"
+	"github.com/suryanshu-09/holy_grail/internal/extraction"
 	"github.com/suryanshu-09/holy_grail/internal/httpx"
 	"github.com/suryanshu-09/holy_grail/internal/questions"
 	"github.com/suryanshu-09/holy_grail/internal/topics"
@@ -21,10 +22,11 @@ type Pinger interface {
 
 // RouterDeps wires the handler layer to the service layer.
 type RouterDeps struct {
-	DB        Pinger
-	Documents *documents.Service
-	Questions *questions.Service
-	Topics    *topics.Service
+	DB         Pinger
+	Documents  *documents.Service
+	Extraction *extraction.ExtractionService
+	Questions  *questions.Service
+	Topics     *topics.Service
 }
 
 // NewRouter builds the versioned route table wrapped in middleware.
@@ -34,6 +36,7 @@ func NewRouter(cfg *config.AppConfig, deps RouterDeps) http.Handler {
 	mux.Handle(APIVersion+"/health", handleHealth())
 	mux.Handle(APIVersion+"/ready", handleReady(deps.DB))
 	mux.Handle(APIVersion+"/documents", handleDocuments(deps.Documents, cfg.MaxUploadBytes))
+	mux.Handle("POST "+APIVersion+"/documents/{id}/extract", handleExtractDocument(deps.Documents, deps.Extraction))
 	mux.Handle(APIVersion+"/questions", handleQuestions(deps.Questions))
 	mux.Handle(APIVersion+"/topics", handleTopics(deps.Topics))
 

@@ -23,7 +23,15 @@ type Repository interface {
 	List(ctx context.Context, f Filter) ([]Document, error)
 	GetByID(ctx context.Context, id string) (Document, error)
 	Create(ctx context.Context, d *Document) error
+	UpdateStatus(ctx context.Context, id string, status string) error
 }
+
+// Document lifecycle statuses stored in documents.status.
+const (
+	StatusUploaded  = "uploaded"
+	StatusExtracted = "extracted"
+	StatusFailed    = "failed"
+)
 
 // Storage persists uploaded document files and returns their storage-relative
 // path.
