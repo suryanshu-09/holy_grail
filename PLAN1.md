@@ -406,18 +406,18 @@ Don't allow HTTP handlers to directly contain SQL/business logic.
 
 ## Tasks
 
-- [ ] HTTP server
-- [ ] Configuration
-- [ ] Database connection pool
-- [ ] Graceful shutdown
-- [ ] Request logging
-- [ ] Error handling
-- [ ] JSON response helpers
-- [ ] Request validation
-- [ ] CORS configuration
-- [ ] Health endpoint
-- [ ] Readiness endpoint
-- [ ] Basic API versioning
+- [x] HTTP server
+- [x] Configuration
+- [x] Database connection pool
+- [x] Graceful shutdown
+- [x] Request logging
+- [x] Error handling
+- [x] JSON response helpers
+- [x] Request validation
+- [x] CORS configuration
+- [x] Health endpoint
+- [x] Readiness endpoint
+- [x] Basic API versioning
 
 Suggested API prefix:
 
@@ -445,10 +445,14 @@ GET /api/v1/topics
 
 The Go backend can:
 
-- [ ] Connect to PostgreSQL
-- [ ] Query data
-- [ ] Return JSON
-- [ ] Handle errors consistently
-- [ ] Shut down gracefully
+- [x] Connect to PostgreSQL
+- [x] Query data
+- [x] Return JSON
+- [x] Handle errors consistently
+- [x] Shut down gracefully
+
+Completed: 2026-08-24T14:09:26+05:30
+
+Verified: built and ran the API against the seeded Postgres instance. All `/api/v1` endpoints (health, ready, documents, questions, topics) returned JSON from live queries; request logging, CORS preflight, validation errors (400), method-not-allowed (405), and consistent JSON error envelopes confirmed; graceful shutdown verified via SIGTERM ("server exited properly").
 
 ---
