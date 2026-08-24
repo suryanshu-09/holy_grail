@@ -74,6 +74,20 @@ func (r *repository) List(ctx context.Context, f Filter) ([]Document, error) {
 	return docs, nil
 }
 
+// Create inserts a new document row and populates its timestamps.
+func (r *repository) Create(ctx context.Context, d *Document) error {
+	const query = `INSERT INTO documents (id, filename, original_filename, storage_path, subject, year, status)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+RETURNING created_at, updated_at`
+	err := r.db.QueryRowContext(ctx, query,
+		d.ID, d.Filename, d.OriginalFilename, d.StoragePath, d.Subject, d.Year, d.Status).
+		Scan(&d.CreatedAt, &d.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("documents: create: %w", err)
+	}
+	return nil
+}
+
 // GetByID returns a single document by ID or apperr.ErrNotFound.
 func (r *repository) GetByID(ctx context.Context, id string) (Document, error) {
 	var d Document

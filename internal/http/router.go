@@ -33,7 +33,7 @@ func NewRouter(cfg *config.AppConfig, deps RouterDeps) http.Handler {
 
 	mux.Handle(APIVersion+"/health", handleHealth())
 	mux.Handle(APIVersion+"/ready", handleReady(deps.DB))
-	mux.Handle(APIVersion+"/documents", handleDocuments(deps.Documents))
+	mux.Handle(APIVersion+"/documents", handleDocuments(deps.Documents, cfg.MaxUploadBytes))
 	mux.Handle(APIVersion+"/questions", handleQuestions(deps.Questions))
 	mux.Handle(APIVersion+"/topics", handleTopics(deps.Topics))
 

@@ -16,6 +16,8 @@ type AppConfig struct {
 	DBMaxIdleConns    int
 	DBConnMaxLifetime time.Duration
 	CORSAllowedOrigin string
+	DataDir           string
+	MaxUploadBytes    int64
 }
 
 // NewAppConfig creates AppConfig from environment variables
@@ -45,6 +47,8 @@ func NewAppConfig() AppConfig {
 		DBMaxIdleConns:    getIntEnv("DB_MAX_IDLE_CONNS", 5),
 		DBConnMaxLifetime: getDurationEnv("DB_CONN_MAX_LIFETIME", 30*time.Minute),
 		CORSAllowedOrigin: getEnv("CORS_ALLOWED_ORIGIN", ""),
+		DataDir:           getEnv("STORAGE_PATH", "data"),
+		MaxUploadBytes:    getInt64Env("MAX_UPLOAD_BYTES", 50*1024*1024),
 	}
 }
 
@@ -58,6 +62,15 @@ func getEnv(key, fallback string) string {
 func getIntEnv(key string, fallback int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
+func getInt64Env(key string, fallback int64) int64 {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
 			return n
 		}
 	}

@@ -96,14 +96,14 @@ Multipart upload.
 
 ## Validation
 
-- [ ] Only PDF files
-- [ ] File size limit
-- [ ] Filename sanitization
-- [ ] Unique document ID
-- [ ] Prevent path traversal
-- [ ] Validate actual file type
-- [ ] Store metadata
-- [ ] Return document ID
+- [x] Only PDF files
+- [x] File size limit
+- [x] Filename sanitization
+- [x] Unique document ID
+- [x] Prevent path traversal
+- [x] Validate actual file type
+- [x] Store metadata
+- [x] Return document ID
 
 ---
 
@@ -111,12 +111,12 @@ Multipart upload.
 
 Implement:
 
-- [ ] File picker
-- [ ] Drag-and-drop
-- [ ] Upload progress
-- [ ] Upload errors
-- [ ] Document status
-- [ ] Document list
+- [x] File picker
+- [x] Drag-and-drop
+- [x] Upload progress
+- [x] Upload errors
+- [x] Document status
+- [x] Document list
 
 ---
 

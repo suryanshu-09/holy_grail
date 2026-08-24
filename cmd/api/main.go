@@ -16,6 +16,7 @@ import (
 	"github.com/suryanshu-09/holy_grail/internal/documents"
 	"github.com/suryanshu-09/holy_grail/internal/logging"
 	"github.com/suryanshu-09/holy_grail/internal/questions"
+	"github.com/suryanshu-09/holy_grail/internal/storage"
 	"github.com/suryanshu-09/holy_grail/internal/topics"
 )
 
@@ -38,9 +39,15 @@ func main() {
 	questionRepo := questions.NewRepository(db)
 	topicRepo := topics.NewRepository(db)
 
+	store, err := storage.NewLocalStore(cfg.DataDir)
+	if err != nil {
+		logger.Error("failed to initialise local storage", "error", err)
+		os.Exit(1)
+	}
+
 	deps := apihttp.RouterDeps{
 		DB:        db,
-		Documents: documents.NewService(documentRepo),
+		Documents: documents.NewService(documentRepo, store),
 		Questions: questions.NewService(questionRepo),
 		Topics:    topics.NewService(topicRepo),
 	}

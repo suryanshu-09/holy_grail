@@ -31,3 +31,8 @@ vendor/
 
 # Local database data
 db_data/
+
+*.tsbuildinfo
+
+# Uploaded documents (local file storage)
+data/

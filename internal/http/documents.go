@@ -10,14 +10,27 @@ import (
 	"github.com/suryanshu-09/holy_grail/internal/httpx"
 )
 
-// handleDocuments lists documents.
-func handleDocuments(svc *documents.Service) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			methodNotAllowed(w, http.MethodGet)
-			return
-		}
+// maxMultipartMemory bounds how much of an upload is buffered in RAM before
+// spilling to temp files.
+const maxMultipartMemory = 8 << 20 // 8 MiB
 
+// handleDocuments lists documents (GET) and accepts multipart uploads (POST).
+func handleDocuments(svc *documents.Service, maxUploadBytes int64) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			listDocuments(svc)(w, r)
+		case http.MethodPost:
+			uploadDocument(svc, maxUploadBytes)(w, r)
+		default:
+			methodNotAllowed(w, http.MethodGet, http.MethodPost)
+		}
+	})
+}
+
+// listDocuments returns a paginated, filtered list of documents.
+func listDocuments(svc *documents.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		pg, err := httpx.ParsePagination(r)
 		if err != nil {
 			httpx.Error(w, http.StatusBadRequest, err.Error())
@@ -49,5 +62,46 @@ func handleDocuments(svc *documents.Service) http.Handler {
 		}
 
 		httpx.WriteJSON(w, http.StatusOK, docs)
-	})
+	}
+}
+
+// uploadDocument handles multipart PDF uploads and returns the stored document.
+func uploadDocument(svc *documents.Service, maxUploadBytes int64) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+		if err := r.ParseMultipartForm(maxMultipartMemory); err != nil {
+			var maxErr *http.MaxBytesError
+			if errors.As(err, &maxErr) {
+				httpx.Error(w, http.StatusRequestEntityTooLarge, "uploaded file exceeds the size limit")
+				return
+			}
+			httpx.Error(w, http.StatusBadRequest, "invalid multipart form")
+			return
+		}
+		defer func() {
+			if r.MultipartForm != nil {
+				_ = r.MultipartForm.RemoveAll()
+			}
+		}()
+
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			httpx.Error(w, http.StatusBadRequest, "missing file field")
+			return
+		}
+		defer file.Close()
+
+		doc, err := svc.Upload(r.Context(), header.Filename, file)
+		if err != nil {
+			if errors.Is(err, apperr.ErrInvalidUpload) {
+				httpx.Error(w, http.StatusBadRequest, "only PDF files are allowed")
+				return
+			}
+			httpx.LogError("document upload failed", err)
+			httpx.Error(w, http.StatusInternalServerError, "internal server error")
+			return
+		}
+
+		httpx.WriteJSON(w, http.StatusCreated, doc)
+	}
 }
