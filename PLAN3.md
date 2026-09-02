@@ -74,14 +74,14 @@ Start with flat topics.
 
 ## Tasks
 
-- [ ] Define topic classification schema
-- [ ] LLM classification
-- [ ] Normalize topic names
-- [ ] Create topic records
-- [ ] Associate questions with topics
-- [ ] Add confidence
-- [ ] Allow manual topic correction
-- [ ] Allow merging duplicate topics
+- [x] Define topic classification schema
+- [x] LLM classification
+- [x] Normalize topic names
+- [x] Create topic records
+- [x] Associate questions with topics
+- [x] Add confidence
+- [x] Allow manual topic correction
+- [x] Allow merging duplicate topics
 
 ---
 
@@ -95,6 +95,10 @@ Paging           31 questions
 CPU Scheduling   28 questions
 Synchronization  19 questions
 ```
+
+Completed: 2026-09-02T00:00:00+05:30
+
+Verified: topics table with `question_topics` join (confidence, created_at) via `003_add_topic_classification.sql`; `topics.Classifier` (LLM + heuristic fallback) with `NormalizeTopicName`/`CanonicalTopicKey` dedup and confidence clamping; `ExtractionService.ClassifyDocument` persists via `FindOrCreate`+`AddQuestionTopic` and writes `classification.json`; HTTP `GET /api/v1/topics?include_counts=1` returns `TopicWithCount`, `PATCH /api/v1/questions/{id}/topics` corrects and `POST /api/v1/topics/merge` merges duplicates; frontend `pages/topics/index.tsx` uses `listTopicsWithCounts`, `TopicSelector` shows counts, document detail shows per-question topics via `GET /api/v1/questions/{id}/topics`; integration test `TestPhase9_FullFlow_ExtractClassifyCountsCorrectionMerge` extracts mock PDF→classify fake LLM→verifies counts and correction/merge; `go vet`/`go test`/`npm run build` pass.
 
 ---
 

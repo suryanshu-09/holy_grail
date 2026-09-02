@@ -17,6 +17,24 @@ export interface Topic {
   created_at?: string | null;
 }
 
+export interface TopicWithCount extends Topic {
+  question_count: number;
+}
+
+export interface QuestionTopicInfo {
+  id: string;
+  name: string;
+  subject?: string | null;
+  confidence?: number | null;
+  created_at?: string | null;
+}
+
+export interface ClassifyResult {
+  document_id: string;
+  classified: number;
+  status: string;
+}
+
 export interface Question {
   id: string;
   document_id?: string | null;
@@ -124,6 +142,120 @@ export async function listTopics(filters?: TopicFilters): Promise<Topic[]> {
       subject: filters?.subject,
     })
   );
+}
+
+export async function listTopicsWithCounts(filters?: TopicFilters): Promise<TopicWithCount[]> {
+  return request<TopicWithCount[]>(
+    buildUrl('/topics', {
+      limit: filters?.limit,
+      offset: filters?.offset,
+      subject: filters?.subject,
+      include_counts: 1,
+    })
+  );
+}
+
+export async function classifyDocument(documentId: string): Promise<ClassifyResult> {
+  if (!documentId || !documentId.trim()) {
+    throw new Error('documentId is required');
+  }
+  const res = await fetch(`${BASE_URL}/documents/${documentId}/classify`, {
+    method: 'POST',
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    try {
+      const parsed = JSON.parse(body) as ApiErrorBody;
+      if (parsed.error?.message) throw new Error(parsed.error.message);
+    } catch (e) {
+      if (e instanceof Error && (e.message.includes('not found') || e.message.includes('missing') || e.message.includes('failed'))) {
+        throw e;
+      }
+      // ignore parse errors, use generic
+    }
+    throw new Error(`Classification failed: ${res.status} ${res.statusText}`);
+  }
+  return (await res.json()) as ClassifyResult;
+}
+
+export async function listQuestionsByTopic(
+  topicId: string,
+  filters?: { limit?: number; offset?: number }
+): Promise<Question[]> {
+  if (!topicId || !topicId.trim()) {
+    throw new Error('topicId is required');
+  }
+  const qs = await request<Question[]>(
+    buildUrl(`/topics/${topicId}/questions`, {
+      limit: filters?.limit,
+      offset: filters?.offset,
+    })
+  );
+  return qs.map((q) => {
+    let options: string[] | undefined;
+    let images: string[] | undefined;
+    try {
+      if (q.options_json) options = JSON.parse(q.options_json);
+    } catch {}
+    try {
+      if (q.images_json) images = JSON.parse(q.images_json);
+    } catch {}
+    return { ...q, options, images };
+  });
+}
+
+export async function listTopicsForQuestion(questionId: string): Promise<Topic[]> {
+  if (!questionId || !questionId.trim()) {
+    throw new Error('questionId is required');
+  }
+  return request<Topic[]>(buildUrl(`/questions/${questionId}/topics`, {}));
+}
+
+export async function correctQuestionTopics(questionId: string, topicIds: string[]): Promise<Topic[]> {
+  if (!questionId || !questionId.trim()) {
+    throw new Error('questionId is required');
+  }
+  const res = await fetch(`${BASE_URL}/questions/${questionId}/topics`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ topic_ids: topicIds }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    try {
+      const parsed = JSON.parse(body) as ApiErrorBody;
+      if (parsed.error?.message) throw new Error(parsed.error.message);
+    } catch (e) {
+      if (e instanceof Error && e.message.includes('not found')) throw e;
+    }
+    throw new Error(`Correct topics failed: ${res.status} ${res.statusText}`);
+  }
+  return (await res.json()) as Topic[];
+}
+
+export async function mergeTopics(targetId: string, sourceIds: string[]): Promise<{ status: string }> {
+  if (!targetId || !targetId.trim()) {
+    throw new Error('targetId is required');
+  }
+  if (!sourceIds || sourceIds.length === 0) {
+    throw new Error('sourceIds is required');
+  }
+  const res = await fetch(`${BASE_URL}/topics/merge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ target_id: targetId, source_ids: sourceIds }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    try {
+      const parsed = JSON.parse(body) as ApiErrorBody;
+      if (parsed.error?.message) throw new Error(parsed.error.message);
+    } catch (e) {
+      if (e instanceof Error && e.message.includes('not found')) throw e;
+    }
+    throw new Error(`Merge failed: ${res.status} ${res.statusText}`);
+  }
+  return (await res.json()) as { status: string };
 }
 
 export async function listQuestions(filters?: QuestionFilters): Promise<Question[]> {

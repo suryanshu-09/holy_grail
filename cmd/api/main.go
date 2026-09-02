@@ -63,16 +63,27 @@ func main() {
 		logger.Error("failed to initialise extraction pipeline", "error", err)
 		os.Exit(1)
 	}
-	// If an OpenAI API key is present, enable LLM fallback for extraction.
+	// Wire topic classifier: LLM when OPENAI_API_KEY set, otherwise heuristic fallback.
+	// Also wire LLM fallback for extraction when key is present (reuses same client).
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
 		openai, oErr := llm.NewOpenAIClient(key, "gpt-3.5-turbo", "")
 		if oErr != nil {
 			logger.Warn("failed to create OpenAI client", "error", oErr)
+			heuristic := topics.NewHeuristicClassifier()
+			extractionSvc = extractionSvc.WithTopicClassifier(heuristic, topicRepo)
+			logger.Info("heuristic topic classifier enabled (OpenAI client creation failed)")
 		} else {
 			fallback := &extraction.LLMFallback{Client: openai, MaxPages: 3}
 			extractionSvc = extractionSvc.WithLLMFallback(fallback)
 			logger.Info("LLM fallback enabled for extraction")
+			classifier := topics.NewClassifier(openai, 3, 100*time.Millisecond)
+			extractionSvc = extractionSvc.WithTopicClassifier(classifier, topicRepo)
+			logger.Info("LLM topic classifier enabled")
 		}
+	} else {
+		heuristic := topics.NewHeuristicClassifier()
+		extractionSvc = extractionSvc.WithTopicClassifier(heuristic, topicRepo)
+		logger.Info("heuristic topic classifier enabled (no OPENAI_API_KEY)")
 	}
 
 	deps := apihttp.RouterDeps{

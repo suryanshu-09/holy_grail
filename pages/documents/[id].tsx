@@ -3,7 +3,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { EmptyState, ErrorState, LoadingState } from '../../components/ui'
 import { QuestionCard } from '../../components/QuestionCard'
-import { listDocuments, listQuestions, extractDocument, getBaseUrl, type Document, type Question, type DocumentImage } from '../../lib/api'
+import { listDocuments, listQuestions, listTopicsForQuestion, classifyDocument, extractDocument, getBaseUrl, type Document, type Question, type Topic, type DocumentImage } from '../../lib/api'
 
 const statusStyles: Record<string, string> = {
   uploaded: 'bg-gray-100 text-gray-700',
@@ -37,6 +37,9 @@ export default function DocumentDetailPage() {
   const [images, setImages] = useState<DocumentImage[]>([])
   const [extracting, setExtracting] = useState(false)
   const [extractMsg, setExtractMsg] = useState<string | null>(null)
+  const [topicsByQuestion, setTopicsByQuestion] = useState<Record<string, Topic[]>>({})
+  const [classifying, setClassifying] = useState(false)
+  const [classifyMsg, setClassifyMsg] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     if (typeof id !== 'string') return
@@ -58,6 +61,22 @@ export default function DocumentDetailPage() {
     try {
       const qs = await listQuestions({ document_id: id, limit: 100 })
       setQuestions(qs)
+      // Fetch per-question topics in parallel; failures are per-question non-fatal.
+      const entries: [string, Topic[]][] = await Promise.all(
+        qs.map(async (q): Promise<[string, Topic[]]> => {
+          try {
+            const ts = await listTopicsForQuestion(q.id)
+            return [q.id, ts]
+          } catch {
+            return [q.id, []]
+          }
+        })
+      )
+      const map: Record<string, Topic[]> = {}
+      for (const entry of entries) {
+        map[entry[0]] = entry[1]
+      }
+      setTopicsByQuestion(map)
     } catch {
       // ignore
     } finally {
@@ -103,6 +122,21 @@ export default function DocumentDetailPage() {
       setExtractMsg(err instanceof Error ? err.message : 'Extraction failed')
     } finally {
       setExtracting(false)
+    }
+  }
+
+  const handleClassify = async () => {
+    if (typeof id !== 'string') return
+    setClassifying(true)
+    setClassifyMsg(null)
+    try {
+      const res = await classifyDocument(id)
+      setClassifyMsg(`Classified ${res.classified} questions`)
+      await loadQuestions()
+    } catch (err) {
+      setClassifyMsg(err instanceof Error ? err.message : 'Classification failed')
+    } finally {
+      setClassifying(false)
     }
   }
 
@@ -157,6 +191,13 @@ export default function DocumentDetailPage() {
             {extracting ? 'Extracting…' : 'Run extraction'}
           </button>
           <button
+            onClick={handleClassify}
+            disabled={classifying}
+            className="rounded bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50"
+          >
+            {classifying ? 'Classifying…' : 'Classify topics'}
+          </button>
+          <button
             onClick={() => {
               loadQuestions()
               loadImages()
@@ -167,6 +208,7 @@ export default function DocumentDetailPage() {
           </button>
         </div>
         {extractMsg && <p className="mt-3 text-sm text-gray-600">{extractMsg}</p>}
+        {classifyMsg && <p className="mt-2 text-sm text-gray-600">{classifyMsg}</p>}
       </div>
 
       <div className="mt-8">
@@ -219,6 +261,7 @@ export default function DocumentDetailPage() {
                 images={q.images}
                 documentId={q.document_id ?? document.id}
                 confidence={q.confidence ?? undefined}
+                topics={topicsByQuestion[q.id]}
               />
             ))}
           </div>

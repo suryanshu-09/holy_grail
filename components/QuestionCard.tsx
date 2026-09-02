@@ -15,6 +15,7 @@ export type QuestionMeta = {
   images?: string[]
   documentId?: string
   confidence?: number
+  topics?: Array<{ id: string; name: string; subject?: string | null }>
 }
 
 type Props = QuestionMeta & {
@@ -50,9 +51,10 @@ export function QuestionCard({
   images,
   documentId,
   confidence,
+  topics,
   className = '',
 }: Props) {
-  const hasMeta = Boolean(subject || year || pageNumber || startPage || difficulty || questionType)
+  const hasMeta = Boolean(subject || year || pageNumber || startPage || difficulty || questionType || (topics && topics.length > 0))
   const pageLabel = startPage && endPage && startPage !== endPage ? `Pages ${startPage}–${endPage}` : startPage ? `Page ${startPage}` : pageNumber ? `Page ${pageNumber}` : null
 
   return (
@@ -103,6 +105,7 @@ export function QuestionCard({
           {difficulty && <MetaChip>{difficulty}</MetaChip>}
           {questionType && <MetaChip>{questionType}</MetaChip>}
           {confidence != null && <MetaChip>{Math.round(confidence * 100)}% confidence</MetaChip>}
+          {topics && topics.map((t) => <MetaChip key={t.id}>{t.name}</MetaChip>)}
         </div>
       )}
     </div>

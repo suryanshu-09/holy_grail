@@ -27,6 +27,7 @@ type RouterDeps struct {
 	Extraction *extraction.ExtractionService
 	Questions  *questions.Service
 	Topics     *topics.Service
+	Classifier ClassifierPipeline
 }
 
 // NewRouter builds the versioned route table wrapped in middleware.
@@ -41,7 +42,16 @@ func NewRouter(cfg *config.AppConfig, deps RouterDeps) http.Handler {
 	mux.Handle("GET "+APIVersion+"/documents/{id}/images/{name}", handleDocumentImages(cfg.DataDir))
 	mux.Handle("GET "+APIVersion+"/documents/{id}/images", handleListDocumentImages(cfg.DataDir))
 	mux.Handle(APIVersion+"/questions", handleQuestions(deps.Questions))
+	mux.Handle("GET "+APIVersion+"/questions/{id}/topics", handleGetQuestionTopics(deps.Topics))
+	mux.Handle("PATCH "+APIVersion+"/questions/{id}/topics", handleCorrectQuestionTopics(deps.Topics))
 	mux.Handle(APIVersion+"/topics", handleTopics(deps.Topics))
+	mux.Handle("POST "+APIVersion+"/topics/merge", handleMergeTopics(deps.Topics))
+	if deps.Classifier != nil {
+		mux.Handle("POST "+APIVersion+"/documents/{id}/classify", handleClassifyDocument(deps.Classifier))
+	} else {
+		mux.Handle("POST "+APIVersion+"/documents/{id}/classify", handleClassifyDocumentWithServices(deps.Documents, deps.Topics, deps.Questions))
+	}
+	mux.Handle("GET "+APIVersion+"/topics/{id}/questions", handleTopicQuestions(deps.Questions, deps.Topics))
 
 	handler := httpx.Recover(mux)
 	handler = httpx.RequestLogging(handler)

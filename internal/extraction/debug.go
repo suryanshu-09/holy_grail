@@ -95,6 +95,32 @@ func buildSummary(e DocumentExtraction) DebugSummary {
 	return summary
 }
 
+// Root returns the absolute root directory of the debug writer.
+func (w *DebugWriter) Root() string {
+	return w.root
+}
+
+// WriteClassification persists classification artifacts for a document as
+// <root>/<documentID>/classification.json plus per-question files. It is
+// used for replay and QA of topic classification. Like WriteQuestions it does
+// not clear the directory.
+func (w *DebugWriter) WriteClassification(documentID string, data []byte) error {
+	if !safeSegment(documentID) {
+		return fmt.Errorf("extraction: unsafe document id %q", documentID)
+	}
+	dir := filepath.Join(w.root, documentID)
+	if !withinRoot(w.root, dir) {
+		return fmt.Errorf("extraction: resolved path escapes root: %q", dir)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("extraction: create debug dir: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "classification.json"), data, 0o644); err != nil {
+		return fmt.Errorf("extraction: write classification.json: %w", err)
+	}
+	return nil
+}
+
 // WriteQuestions persists the extracted questions for a document as
 // <root>/<documentID>/questions.json plus per-question question-NNN.json files.
 // It is used to keep raw extraction artifacts for replay and QA. Unlike Write,

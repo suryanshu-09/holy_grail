@@ -4,6 +4,7 @@ export interface Topic {
   id: string
   name: string
   subject?: string | null
+  question_count?: number
 }
 
 type Props = {
@@ -12,6 +13,14 @@ type Props = {
   value?: string
   placeholder?: string
 } & Omit<React.SelectHTMLAttributes<HTMLSelectElement>, 'onChange'>
+
+function formatTopicLabel(topic: Topic): string {
+  if (typeof topic.question_count === 'number') {
+    const n = topic.question_count
+    return `${topic.name} — ${n} ${n === 1 ? 'question' : 'questions'}`
+  }
+  return topic.name
+}
 
 export function TopicSelector({ topics, onChange, value = '', placeholder = 'Select a topic', ...props }: Props) {
   return (
@@ -24,7 +33,7 @@ export function TopicSelector({ topics, onChange, value = '', placeholder = 'Sel
       <option value="">{placeholder}</option>
       {topics.map((topic) => (
         <option key={topic.id} value={topic.id}>
-          {topic.name}
+          {formatTopicLabel(topic)}
         </option>
       ))}
     </select>

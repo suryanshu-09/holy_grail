@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
 
 	"github.com/suryanshu-09/holy_grail/internal/documents"
 	"github.com/suryanshu-09/holy_grail/internal/questions"
+	"github.com/suryanshu-09/holy_grail/internal/topics"
 )
 
 const (
@@ -34,6 +36,8 @@ type ExtractionService struct {
 	questionRepo questions.Repository
 	llmFallback  *LLMFallback
 	debugWriter  *DebugWriter
+	classifier   topics.ClassifierInterface
+	topicRepo    topics.Repository
 }
 
 // WithLLMFallback attaches an LLM fallback to the extraction service.
@@ -47,6 +51,26 @@ func (s *ExtractionService) WithLLMFallback(f *LLMFallback) *ExtractionService {
 // on the Service itself.
 func (s *ExtractionService) WithDebugWriter(w *DebugWriter) *ExtractionService {
 	s.debugWriter = w
+	return s
+}
+
+// WithClassifier attaches a topic classifier used after question persistence.
+// It is non-fatal: LLM failures are logged and continued.
+func (s *ExtractionService) WithClassifier(c topics.ClassifierInterface) *ExtractionService {
+	s.classifier = c
+	return s
+}
+
+// WithTopicRepo attaches the topics repository used to persist classification results.
+func (s *ExtractionService) WithTopicRepo(r topics.Repository) *ExtractionService {
+	s.topicRepo = r
+	return s
+}
+
+// WithTopicClassifier is a convenience that attaches both classifier and topic repo.
+func (s *ExtractionService) WithTopicClassifier(c topics.ClassifierInterface, r topics.Repository) *ExtractionService {
+	s.classifier = c
+	s.topicRepo = r
 	return s
 }
 
@@ -99,6 +123,17 @@ func (s *ExtractionService) Extract(ctx context.Context, documentID, storagePath
 	// operators and can be retried.
 	if err := s.ExtractQuestions(ctx, result); err != nil {
 		return DocumentExtraction{}, s.markFailed(ctx, documentID, err)
+	}
+
+	// Topic classification is non-fatal: log and continue on LLM failure.
+	if s.classifier != nil && s.topicRepo != nil {
+		if err := s.ClassifyDocument(ctx, documentID); err != nil {
+			slog.Warn("extraction: classification failed (non-fatal)", "document", documentID, "error", err)
+		}
+	} else {
+		slog.Debug("extraction: classification skipped (no classifier or topic repo)", "document", documentID)
+		// Still write empty classification artifact for observability
+		_ = s.writeClassificationArtifact(documentID, nil)
 	}
 
 	if err := s.repo.UpdateStatus(ctx, documentID, documents.StatusExtracted); err != nil {
@@ -175,6 +210,197 @@ func (s *ExtractionService) saveResults(documentID string, result DocumentExtrac
 		_ = writeFileAtomic(filepath.Join(dir, "images.json"), append(imgData, '\n'))
 		_ = writeFileAtomic(filepath.Join(debugDir, "images.json"), append(imgData, '\n'))
 	}
+	return nil
+}
+
+// ClassificationArtifact records the classification result for a single question
+// for debug artifact persistence.
+type ClassificationArtifact struct {
+	QuestionID   string              `json:"question_id"`
+	QuestionText string              `json:"question_text"`
+	Subject      *string             `json:"subject,omitempty"`
+	Labels       []topics.TopicLabel `json:"labels"`
+	Error        string              `json:"error,omitempty"`
+	PromptHash   string              `json:"prompt_hash,omitempty"`
+}
+
+// ClassifyDocument classifies all questions for a document on-demand.
+// It fetches questions via the questions repository, calls the classifier for each
+// question, and persists topics via FindOrCreate + AddQuestionTopic with confidence.
+// It is non-fatal per-question: LLM failures are logged and continued; the method
+// returns nil unless the classifier or topic repo is not configured or a fatal DB
+// error occurs. It also writes debug artifacts (classification.json) under the
+// extraction dir for observability.
+func (s *ExtractionService) ClassifyDocument(ctx context.Context, documentID string) error {
+	if !safeSegment(documentID) {
+		return fmt.Errorf("extraction: unsafe document id %q", documentID)
+	}
+	if s.classifier == nil {
+		return fmt.Errorf("extraction: no classifier configured")
+	}
+	if s.topicRepo == nil {
+		return fmt.Errorf("extraction: no topic repo configured")
+	}
+	if s.questionRepo == nil {
+		return fmt.Errorf("extraction: no questions repository configured")
+	}
+
+	// Fetch questions for document. Paginate because List clamps limit to 100.
+	var allQuestions []questions.Question
+	offset := 0
+	limit := 100
+	for {
+		batch, err := s.questionRepo.List(ctx, questions.Filter{
+			DocumentID: documentID,
+			Limit:      limit,
+			Offset:     offset,
+		})
+		if err != nil {
+			return fmt.Errorf("extraction: list questions for classification: %w", err)
+		}
+		if len(batch) == 0 {
+			break
+		}
+		allQuestions = append(allQuestions, batch...)
+		if len(batch) < limit {
+			break
+		}
+		offset += len(batch)
+	}
+
+	if len(allQuestions) == 0 {
+		slog.Info("extraction: no questions to classify", "document", documentID)
+		return s.writeClassificationArtifact(documentID, nil)
+	}
+
+	var artifacts []ClassificationArtifact
+	for _, q := range allQuestions {
+		if q.QuestionText == nil || len(*q.QuestionText) == 0 {
+			slog.Warn("extraction: skip classification for question with empty text", "question_id", q.ID)
+			artifacts = append(artifacts, ClassificationArtifact{
+				QuestionID:   q.ID,
+				QuestionText: "",
+				Labels:       nil,
+				Error:        "empty question text",
+			})
+			continue
+		}
+		subject := ""
+		if q.Subject != nil {
+			subject = *q.Subject
+		}
+		// Also consider document subject fallback? For now use question subject.
+		labels, err := s.classifier.ClassifyQuestion(ctx, *q.QuestionText, subject)
+		promptHash := ""
+		if s.classifier != nil {
+			promptHash = s.classifier.LastPromptHash()
+		}
+		if err != nil {
+			slog.Warn("extraction: classification failed for question (non-fatal)", "question_id", q.ID, "error", err)
+			artifacts = append(artifacts, ClassificationArtifact{
+				QuestionID:   q.ID,
+				QuestionText: *q.QuestionText,
+				Subject:      q.Subject,
+				Labels:       nil,
+				Error:        err.Error(),
+				PromptHash:   promptHash,
+			})
+			continue
+		}
+
+		// Persist each label via FindOrCreate + AddQuestionTopic
+		for _, lbl := range labels {
+			var subjPtr *string
+			if lbl.Subject != "" {
+				subj := lbl.Subject
+				subjPtr = &subj
+			} else if subject != "" {
+				subj := subject
+				subjPtr = &subj
+			}
+			// Normalize already done inside classifier; but ensure FindOrCreate uses normalized name
+			topic, err := s.topicRepo.FindOrCreate(ctx, lbl.Topic, subjPtr)
+			if err != nil {
+				slog.Warn("extraction: FindOrCreate topic failed (non-fatal)", "question_id", q.ID, "topic", lbl.Topic, "error", err)
+				continue
+			}
+			conf := lbl.Confidence
+			// Clamp confidence already done but double-check
+			if conf < 0 {
+				conf = 0
+			}
+			if conf > 1 {
+				conf = 1
+			}
+			if err := s.topicRepo.AddQuestionTopic(ctx, q.ID, topic.ID, &conf); err != nil {
+				slog.Warn("extraction: AddQuestionTopic failed (non-fatal)", "question_id", q.ID, "topic_id", topic.ID, "error", err)
+				continue
+			}
+		}
+
+		artifacts = append(artifacts, ClassificationArtifact{
+			QuestionID:   q.ID,
+			QuestionText: *q.QuestionText,
+			Subject:      q.Subject,
+			Labels:       labels,
+			PromptHash:   promptHash,
+		})
+	}
+
+	// Write debug artifact (non-fatal if fails)
+	if err := s.writeClassificationArtifact(documentID, artifacts); err != nil {
+		slog.Warn("extraction: write classification artifact failed", "document", documentID, "error", err)
+	}
+
+	return nil
+}
+
+// writeClassificationArtifact writes classification.json under the extraction dir
+// and per-question debug files, plus mirrors to debugWriter if configured.
+func (s *ExtractionService) writeClassificationArtifact(documentID string, artifacts []ClassificationArtifact) error {
+	if !safeSegment(documentID) {
+		return fmt.Errorf("extraction: unsafe document id %q", documentID)
+	}
+	if artifacts == nil {
+		artifacts = []ClassificationArtifact{}
+	}
+	dir := filepath.Join(s.root, documentLayout, documentID, extractionDirName)
+	debugDir := filepath.Join(dir, debugDirName)
+	if err := os.MkdirAll(debugDir, 0o755); err != nil {
+		return fmt.Errorf("extraction: create classification artifact dir: %w", err)
+	}
+
+	data, err := json.MarshalIndent(artifacts, "", "  ")
+	if err != nil {
+		return fmt.Errorf("extraction: encode classification artifact: %w", err)
+	}
+	// Primary artifact
+	if err := writeFileAtomic(filepath.Join(dir, "classification.json"), append(data, '\n')); err != nil {
+		return fmt.Errorf("extraction: write classification.json: %w", err)
+	}
+	// Debug copy
+	_ = writeFileAtomic(filepath.Join(debugDir, "classification.json"), append(data, '\n'))
+
+	// Per-question debug files mirroring question-XXX pattern
+	for i, art := range artifacts {
+		b, _ := json.MarshalIndent(art, "", "  ")
+		name := "classification-" + pad3(i+1) + ".json"
+		_ = writeFileAtomic(filepath.Join(debugDir, name), append(b, '\n'))
+	}
+
+	// Also mirror to top-level DebugWriter if configured (separate root)
+	if s.debugWriter != nil {
+		// Write to debug root under documentID
+		debugRootDir := filepath.Join(s.debugWriter.Root(), documentID)
+		_ = os.MkdirAll(debugRootDir, 0o755)
+		_ = writeFileAtomic(filepath.Join(debugRootDir, "classification.json"), append(data, '\n'))
+		for i, art := range artifacts {
+			b, _ := json.MarshalIndent(art, "", "  ")
+			name := "classification-" + pad3(i+1) + ".json"
+			_ = os.WriteFile(filepath.Join(debugRootDir, name), append(b, '\n'), 0o644)
+		}
+	}
+
 	return nil
 }
 

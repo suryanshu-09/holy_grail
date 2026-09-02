@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/suryanshu-09/holy_grail/internal/documents"
 	"github.com/suryanshu-09/holy_grail/internal/questions"
 )
 
@@ -852,7 +853,9 @@ func (s *ExtractionService) ExtractQuestions(ctx context.Context, de DocumentExt
 	_ = os.MkdirAll(debugDir, 0o755)
 
 	for i, pq := range qs {
+		qID, _ := documents.NewID()
 		q := questions.Question{
+			ID:           qID,
 			DocumentID:   de.DocumentID,
 			QuestionText: &pq.Text,
 		}
