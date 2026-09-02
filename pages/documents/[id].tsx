@@ -2,12 +2,14 @@ import React, { useCallback, useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { EmptyState, ErrorState, LoadingState } from '../../components/ui'
-import { listDocuments, type Document } from '../../lib/api'
+import { QuestionCard } from '../../components/QuestionCard'
+import { listDocuments, listQuestions, extractDocument, getBaseUrl, type Document, type Question, type DocumentImage } from '../../lib/api'
 
 const statusStyles: Record<string, string> = {
   uploaded: 'bg-gray-100 text-gray-700',
   processing: 'bg-yellow-100 text-yellow-800',
   processed: 'bg-green-100 text-green-800',
+  extracted: 'bg-green-100 text-green-800',
   failed: 'bg-red-100 text-red-800',
 }
 
@@ -30,6 +32,11 @@ export default function DocumentDetailPage() {
   const [document, setDocument] = useState<Document | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [questions, setQuestions] = useState<Question[]>([])
+  const [qLoading, setQLoading] = useState(false)
+  const [images, setImages] = useState<DocumentImage[]>([])
+  const [extracting, setExtracting] = useState(false)
+  const [extractMsg, setExtractMsg] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     if (typeof id !== 'string') return
@@ -45,9 +52,59 @@ export default function DocumentDetailPage() {
     }
   }, [id])
 
+  const loadQuestions = useCallback(async () => {
+    if (typeof id !== 'string') return
+    setQLoading(true)
+    try {
+      const qs = await listQuestions({ document_id: id, limit: 100 })
+      setQuestions(qs)
+    } catch {
+      // ignore
+    } finally {
+      setQLoading(false)
+    }
+  }, [id])
+
+  const loadImages = useCallback(async () => {
+    if (typeof id !== 'string') return
+    try {
+      const res = await fetch(`${getBaseUrl()}/documents/${id}/images`)
+      if (res.ok) {
+        const data = (await res.json()) as DocumentImage[]
+        setImages(Array.isArray(data) ? data : [])
+      }
+    } catch {
+      // ignore
+    }
+  }, [id])
+
   useEffect(() => {
     load()
   }, [load])
+
+  useEffect(() => {
+    if (document) {
+      loadQuestions()
+      loadImages()
+    }
+  }, [document, loadQuestions, loadImages])
+
+  const handleExtract = async () => {
+    if (typeof id !== 'string') return
+    setExtracting(true)
+    setExtractMsg(null)
+    try {
+      const summary = await extractDocument(id)
+      setExtractMsg(`Extracted ${summary.page_count} pages, ${summary.extracted_pages} ok, ${summary.pages_needing_ocr} need OCR`)
+      await load()
+      await loadQuestions()
+      await loadImages()
+    } catch (err) {
+      setExtractMsg(err instanceof Error ? err.message : 'Extraction failed')
+    } finally {
+      setExtracting(false)
+    }
+  }
 
   if (loading) return <LoadingState label="Loading document..." />
   if (error) return <ErrorState message={error} onRetry={load} />
@@ -90,6 +147,82 @@ export default function DocumentDetailPage() {
           <DetailRow label="Created" value={formatDate(document.created_at)} />
           <DetailRow label="Updated" value={formatDate(document.updated_at)} />
         </dl>
+
+        <div className="mt-6 flex gap-3">
+          <button
+            onClick={handleExtract}
+            disabled={extracting}
+            className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          >
+            {extracting ? 'Extracting…' : 'Run extraction'}
+          </button>
+          <button
+            onClick={() => {
+              loadQuestions()
+              loadImages()
+            }}
+            className="rounded border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+          >
+            Refresh
+          </button>
+        </div>
+        {extractMsg && <p className="mt-3 text-sm text-gray-600">{extractMsg}</p>}
+      </div>
+
+      <div className="mt-8">
+        <h2 className="text-lg font-semibold text-gray-900">Extracted Images</h2>
+        <p className="mt-1 text-sm text-gray-500">Images embedded in the PDF, associated by page and question.</p>
+        {images.length === 0 ? (
+          <div className="mt-4">
+            <EmptyState message="No images extracted yet. Run extraction to detect images." />
+          </div>
+        ) : (
+          <div className="mt-4 grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-4">
+            {images.map((img) => (
+              <div key={img.name} className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+                <img src={img.url} alt={img.name} className="h-40 w-full object-contain bg-gray-50" loading="lazy" />
+                <div className="p-2">
+                  <p className="truncate text-xs font-medium text-gray-700">{img.name}</p>
+                  <a href={img.url} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline">
+                    Open original
+                  </a>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="mt-8">
+        <h2 className="text-lg font-semibold text-gray-900">Questions ({questions.length})</h2>
+        {qLoading ? (
+          <LoadingState label="Loading questions..." />
+        ) : questions.length === 0 ? (
+          <div className="mt-4">
+            <EmptyState message="No questions extracted yet." />
+          </div>
+        ) : (
+          <div className="mt-4 space-y-4">
+            {questions.map((q) => (
+              <QuestionCard
+                key={q.id}
+                id={q.id}
+                questionText={q.question_text ?? undefined}
+                subject={q.subject ?? undefined}
+                year={q.year ?? undefined}
+                pageNumber={q.page_number ?? undefined}
+                startPage={q.start_page ?? undefined}
+                endPage={q.end_page ?? undefined}
+                difficulty={q.difficulty ?? undefined}
+                questionType={q.question_type ?? undefined}
+                options={q.options}
+                images={q.images}
+                documentId={q.document_id ?? document.id}
+                confidence={q.confidence ?? undefined}
+              />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )

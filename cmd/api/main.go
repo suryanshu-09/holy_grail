@@ -15,6 +15,7 @@ import (
 	"github.com/suryanshu-09/holy_grail/internal/database"
 	"github.com/suryanshu-09/holy_grail/internal/documents"
 	"github.com/suryanshu-09/holy_grail/internal/extraction"
+	"github.com/suryanshu-09/holy_grail/internal/llm"
 	"github.com/suryanshu-09/holy_grail/internal/logging"
 	"github.com/suryanshu-09/holy_grail/internal/questions"
 	"github.com/suryanshu-09/holy_grail/internal/storage"
@@ -57,10 +58,21 @@ func main() {
 		logger.Warn("OCR fallback disabled", "reason", ocrErr)
 	}
 
-	extractionSvc, err := extraction.NewExtractionService(cfg.DataDir, extractor, documentRepo)
+	extractionSvc, err := extraction.NewExtractionService(cfg.DataDir, extractor, documentRepo, questionRepo)
 	if err != nil {
 		logger.Error("failed to initialise extraction pipeline", "error", err)
 		os.Exit(1)
+	}
+	// If an OpenAI API key is present, enable LLM fallback for extraction.
+	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+		openai, oErr := llm.NewOpenAIClient(key, "gpt-3.5-turbo", "")
+		if oErr != nil {
+			logger.Warn("failed to create OpenAI client", "error", oErr)
+		} else {
+			fallback := &extraction.LLMFallback{Client: openai, MaxPages: 3}
+			extractionSvc = extractionSvc.WithLLMFallback(fallback)
+			logger.Info("LLM fallback enabled for extraction")
+		}
 	}
 
 	deps := apihttp.RouterDeps{

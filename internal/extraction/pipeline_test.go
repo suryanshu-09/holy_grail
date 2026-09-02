@@ -10,6 +10,7 @@ import (
 
 	"github.com/suryanshu-09/holy_grail/internal/apperr"
 	"github.com/suryanshu-09/holy_grail/internal/documents"
+	"github.com/suryanshu-09/holy_grail/internal/questions"
 )
 
 // fakeRepo records status transitions so tests can assert on them.
@@ -55,6 +56,23 @@ func (r *fakeRepo) UpdateStatus(_ context.Context, id string, status string) err
 	return nil
 }
 
+// fakeQuestionsRepo is a minimal in-memory implementation of questions.Repository
+// used by extraction pipeline tests to assert that questions are persisted.
+type fakeQuestionsRepo struct {
+	inserted []questions.Question
+}
+
+func (f *fakeQuestionsRepo) List(_ context.Context, _ questions.Filter) ([]questions.Question, error) {
+	return nil, nil
+}
+func (f *fakeQuestionsRepo) GetByID(_ context.Context, _ string) (questions.Question, error) {
+	return questions.Question{}, apperr.ErrNotFound
+}
+func (f *fakeQuestionsRepo) Insert(_ context.Context, q questions.Question) error {
+	f.inserted = append(f.inserted, q)
+	return nil
+}
+
 func newTestPipeline(t *testing.T) (*ExtractionService, *fakeRepo) {
 	t.Helper()
 	root := t.TempDir()
@@ -63,7 +81,8 @@ func newTestPipeline(t *testing.T) (*ExtractionService, *fakeRepo) {
 		t.Fatalf("NewService: %v", err)
 	}
 	repo := newFakeRepo()
-	svc, err := NewExtractionService(root, extractor, repo)
+	qrepo := &fakeQuestionsRepo{}
+	svc, err := NewExtractionService(root, extractor, repo, qrepo)
 	if err != nil {
 		t.Fatalf("NewExtractionService: %v", err)
 	}
@@ -82,7 +101,8 @@ func TestPipelineExtractsSavesAndMarksExtracted(t *testing.T) {
 		t.Fatalf("NewService: %v", err)
 	}
 	repo := newFakeRepo("doc-pipe")
-	svc, err := NewExtractionService(root, extractor, repo)
+	qrepo := &fakeQuestionsRepo{}
+	svc, err := NewExtractionService(root, extractor, repo, qrepo)
 	if err != nil {
 		t.Fatalf("NewExtractionService: %v", err)
 	}
@@ -150,7 +170,8 @@ func TestPipelineEmptyStoragePathUsesCanonicalLayout(t *testing.T) {
 		t.Fatalf("NewService: %v", err)
 	}
 	repo := newFakeRepo("doc-canonical")
-	svc, err := NewExtractionService(root, extractor, repo)
+	qrepo := &fakeQuestionsRepo{}
+	svc, err := NewExtractionService(root, extractor, repo, qrepo)
 	if err != nil {
 		t.Fatalf("NewExtractionService: %v", err)
 	}
@@ -172,7 +193,8 @@ func TestPipelineMarksFailedOnBrokenPDF(t *testing.T) {
 		t.Fatalf("NewService: %v", err)
 	}
 	repo := newFakeRepo("doc-broken")
-	svc, err := NewExtractionService(root, extractor, repo)
+	qrepo := &fakeQuestionsRepo{}
+	svc, err := NewExtractionService(root, extractor, repo, qrepo)
 	if err != nil {
 		t.Fatalf("NewExtractionService: %v", err)
 	}
@@ -219,7 +241,9 @@ func TestSummaryCountsPagesNeedingOCRAndErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	svc, err := NewExtractionService(root, extractor, newFakeRepo("doc-mixed"))
+	repo := newFakeRepo("doc-mixed")
+	qrepo := &fakeQuestionsRepo{}
+	svc, err := NewExtractionService(root, extractor, repo, qrepo)
 	if err != nil {
 		t.Fatalf("NewExtractionService: %v", err)
 	}
@@ -248,10 +272,10 @@ func TestNewExtractionServiceRejectsNilDeps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	if _, err := NewExtractionService(t.TempDir(), nil, newFakeRepo()); err == nil {
+	if _, err := NewExtractionService(t.TempDir(), nil, newFakeRepo(), &fakeQuestionsRepo{}); err == nil {
 		t.Error("nil extractor accepted, want error")
 	}
-	if _, err := NewExtractionService(t.TempDir(), extractor, nil); err == nil {
+	if _, err := NewExtractionService(t.TempDir(), extractor, nil, &fakeQuestionsRepo{}); err == nil {
 		t.Error("nil repository accepted, want error")
 	}
 }

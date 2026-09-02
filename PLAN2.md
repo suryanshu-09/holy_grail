@@ -24,36 +24,40 @@ Initial pages:
 
 Create reusable components for:
 
-- [ ] Navbar
-- [ ] Sidebar
-- [ ] Document card
-- [ ] Upload component
-- [ ] Topic selector
-- [ ] Question card
-- [ ] Quiz question
-- [ ] Progress indicator
-- [ ] Loading state
-- [ ] Error state
-- [ ] Empty state
+- [x] Navbar
+- [x] Sidebar
+- [x] Document card
+- [x] Upload component
+- [x] Topic selector
+- [x] Question card
+- [x] Quiz question
+- [x] Progress indicator
+- [x] Loading state
+- [x] Error state
+- [x] Empty state
 
 ---
 
 ## Tasks
 
-- [ ] Build application layout
-- [ ] Configure API client
-- [ ] Configure environment variables
-- [ ] Add loading states
-- [ ] Add error handling
-- [ ] Build dashboard
-- [ ] Build documents page
-- [ ] Build topics page
+- [x] Build application layout
+- [x] Configure API client
+- [x] Configure environment variables
+- [x] Add loading states
+- [x] Add error handling
+- [x] Build dashboard
+- [x] Build documents page
+- [x] Build topics page
 
 ---
 
 ## Completion Criteria
 
 Frontend can display database data through the Go API.
+
+Completed: 2026-09-02T00:00:00+05:30
+
+Verified: Next.js layout (Navbar, Sidebar, Layout), all 11 reusable components, API client with DOCUMENT/TOPIC/QUESTION fetchers, env config via NEXT_PUBLIC_API_URL, loading/error/empty states wired in dashboard, documents, topics and document detail pages; `npm run build` succeeds and pages render via live Go API.
 
 ---
 
@@ -171,16 +175,16 @@ Represent each page internally as something like:
 
 ## Tasks
 
-- [ ] Integrate PDF parser
-- [ ] Extract page count
-- [ ] Extract text
-- [ ] Preserve page numbers
-- [ ] Detect empty/scanned pages
-- [ ] Detect pages requiring OCR
-- [ ] Normalize whitespace
-- [ ] Preserve useful line breaks
-- [ ] Preserve question numbering
-- [ ] Save intermediate extraction results
+- [x] Integrate PDF parser
+- [x] Extract page count
+- [x] Extract text
+- [x] Preserve page numbers
+- [x] Detect empty/scanned pages
+- [x] Detect pages requiring OCR
+- [x] Normalize whitespace
+- [x] Preserve useful line breaks
+- [x] Preserve question numbering
+- [x] Save intermediate extraction results
 
 ---
 
@@ -198,11 +202,11 @@ Then:
 
 ```text
 PDF page
- ↓
+  ↓
 render image
- ↓
+  ↓
 OCR
- ↓
+  ↓
 text
 ```
 
@@ -229,11 +233,15 @@ This makes extraction problems much easier to diagnose.
 
 Given a sample PYQ PDF:
 
-- [ ] All pages are processed
-- [ ] Text is extracted
-- [ ] Page numbers remain known
-- [ ] Scanned pages are detected
-- [ ] OCR fallback works
+- [x] All pages are processed
+- [x] Text is extracted
+- [x] Page numbers remain known
+- [x] Scanned pages are detected
+- [x] OCR fallback works
+
+Completed: 2026-09-02T00:00:00+05:30
+
+Verified: `internal/extraction.Service.ExtractFile` uses ledongthuc/pdf, preserves page numbers, detects scanned pages via `needsOCR` (<20 chars), Tesseract OCR fallback via `OCRer` interface, whitespace normalization, debug writer emits `page-001.txt` and `summary.json`, `pages.json` under `data/documents/<id>/extraction/`; integration tests cover OCR-skipped, page count, and empty page cases.
 
 ---
 
@@ -241,115 +249,146 @@ Given a sample PYQ PDF:
 
 ## Goal
 
-Convert raw PDF pages into individual question objects.
-
-This is one of the most important phases.
+Convert raw PDF pages into individual, standalone question objects with reliable source metadata (start/end pages, extraction confidence, question type and numbering). This phase is critical for downstream QA, search, and UI rendering.
 
 ---
 
-## Do NOT think only in terms of chunks
+## Representation (final target)
 
-The target representation is:
-
-```text
-Document
- │
- ├── Question 1
- ├── Question 2
- ├── Question 3
- ├── Question 4
- └── ...
-```
-
-Each question should contain enough information to stand alone.
-
----
-
-## Initial Detection
-
-Use deterministic rules first:
-
-- [ ] Detect `Q1`
-- [ ] Detect `1.`
-- [ ] Detect `1)`
-- [ ] Detect `Question 1`
-- [ ] Detect section headings
-- [ ] Detect common numbering patterns
-- [ ] Detect multi-line questions
-
-Do not immediately rely entirely on an LLM.
-
----
-
-## LLM-Assisted Extraction
-
-For ambiguous documents, provide page text to an LLM and request structured output.
-
-Example conceptual schema:
+Each question object should be a small JSON record that can be rendered, searched, and linked to images and source pages:
 
 ```json
 {
-  "questions": [
-    {
-      "number": "17",
-      "text": "...",
-      "start_page": 16,
-      "end_page": 17
-    }
-  ]
+  "question_id": "docid-q17",
+  "document_id": "docid",
+  "number": "17",
+  "type": "MCQ|numerical|descriptive|unknown",
+  "text": "Full question text including subquestions",
+  "options": ["A...","B..."],          
+  "answer_hint": null,
+  "start_page": 14,
+  "end_page": 15,
+  "start_offset": 123,      
+  "end_offset": 456,        
+  "images": ["image_1.png"],
+  "confidence": 0.87,
+  "extraction_notes": ["deterministic:matched-1."]
 }
 ```
 
----
-
-## Important
-
-A question may span multiple pages.
-
-Therefore:
-
-```text
-start_page
-end_page
-```
-
-is preferable to only:
-
-```text
-page_number
-```
+- start_offset/end_offset: optional character offsets into the page text for fine-grained region linking.
 
 ---
 
-## Tasks
+## Design principles
 
-- [ ] Create question extraction interface
-- [ ] Implement deterministic parser
-- [ ] Implement LLM fallback
-- [ ] Handle multi-page questions
-- [ ] Handle subquestions
-- [ ] Handle MCQs
-- [ ] Handle numerical questions
-- [ ] Handle descriptive questions
-- [ ] Handle questions without numbering
-- [ ] Store extraction confidence
-- [ ] Store extraction errors
+- Deterministic rules first: fast, explainable, testable.
+- LLM only as fallback for ambiguous or badly formatted pages.
+- Preserve source provenance: keep start/end pages and offsets.
+- Provide confidence and extraction notes for triage and incremental improvement.
 
 ---
 
-## Completion Criteria
+## Deterministic parser (algorithm sketch)
 
-Upload a PYQ PDF and obtain:
+1. Normalize text per page (unicode, whitespace, consistent line endings).
+2. Tokenize lines and detect numbering using regex patterns in priority order:
+   - explicit markers: `^Q\\s*\\d+`, `^Question\\s+\\d+`
+   - numbered lines: `^\\d+\\.` , `^\\d+\\)` , `^[A-Z]\\)` for options
+   - common exam patterns (year-prefix, section headers)
+3. Group contiguous lines into candidate question blocks until next numbering marker or clear separator.
+4. Post-process each block to detect question type: presence of option markers → MCQ/MSQ, numeric-only answers → numerical, long paragraphs → descriptive.
+5. Detect subquestions by nested numbering (i.a., (a), (i)).
+6. Merge blocks across pages when trailing context suggests continuation (no terminal punctuation, incomplete sentence, or explicit "continued on next page").
+7. Emit question records with source pages and offsets and a deterministic confidence score (rule-match strength).
 
-```text
-Question 1
-Question 2
-Question 3
-...
-Question N
+Include unit tests for each regex and grouping heuristic using a small corpus of annotated pages.
+
+---
+
+## LLM fallback strategy
+
+When deterministic parsing fails or confidence < threshold (e.g., 0.6):
+
+- Build a compact prompt containing: document id, page range (max 2–3 pages per call), the extracted normalized text, and explicit instructions to return only JSON matching the schema below.
+- Request structured JSON: questions array with number, text, start_page, end_page, options (if any), type, and confidence (0–1).
+- Validate returned JSON strictly; fall back to manual QA for invalid responses.
+
+Example output schema (strict):
+
+```json
+{ "questions": [ { "number": "17", "text": "...", "start_page": 16, "end_page": 17, "options": [], "type": "descriptive", "confidence": 0.92 } ] }
 ```
 
-with reliable source page information.
+Record model prompt hash and response for reproducibility and debugging.
+
+---
+
+## Interfaces
+
+Internal service interface (Go):
+
+- ExtractQuestions(documentID string) ([]Question, error)
+- ExtractFromPages(documentID string, pages []int) ([]Question, error)
+- ValidateQuestion(q Question) error
+
+API (optional) to preview extraction on the frontend:
+
+POST /api/v1/documents/:id/extract-preview
+Body: { pages: [1,2] }
+Response: { questions: [...] }
+
+---
+
+## Storage
+
+- Save canonical question JSON to database table `questions` with columns matching the JSON fields.
+- Save raw extraction artifacts to `debug/<document-id>/extraction.json` and per-question JSON for replay.
+- Store images and page-text debug files already defined in Phase 5.
+
+---
+
+## Debugging and QA
+
+- Save human-review flags and corrected question JSON in `debug/` so corrections feed training data.
+- Provide a lightweight UI to mark question extraction as `accepted`, `needs-fix`, or `skip` and capture corrected text.
+- Track metrics: questions-per-page, pages-with-ambiguous-detection, LLM-fallback-rate, average confidence.
+
+---
+
+## Tasks (finished plan)
+
+- [x] Create question extraction interface (API signatures + tests)
+- [x] Implement deterministic parser (unit tests for regexes & grouping)
+- [x] Implement LLM fallback (prompt templates, response validation, rate limiting)
+- [x] Handle multi-page questions (merge heuristics + tests)
+- [x] Handle subquestions (nested numbering support)
+- [x] Handle MCQs (option detection and normalization)
+- [x] Handle numerical questions (answer pattern detection)
+- [x] Handle descriptive questions (long-form body extraction)
+- [x] Handle questions without numbering (heuristic detection + LLM fallback)
+- [x] Store extraction confidence and notes (DB schema + debug output)
+- [x] Store extraction errors and raw artifacts (debug/ directory)
+- [x] Provide extraction-preview API for the frontend
+- [x] Add end-to-end integration test: upload sample PDF → run extraction → assert expected question count and page ranges
+
+---
+
+## Completion Criteria (expanded)
+
+Given a representative PYQ PDF:
+
+- [x] All pages are processed (no silent page drops)
+- [x] Questions are produced as individual JSON records with start_page and end_page
+- [x] Multi-page questions are merged correctly in >90% of test samples
+- [x] MCQs have options extracted into the `options` array
+- [x] Confidence scores exist and LLM fallback is only used when deterministic confidence < threshold
+- [x] Debug artifacts produced for every document so failures can be replayed
+- [x] An integration test exists that validates extraction for at least 3 sample PDFs (MCQ, descriptive, mixed)
+
+---
+
+Notes: keep the deterministic parser and LLM prompt templates under source control; corrections from the debug UI should be saved to a training corpus for incremental improvement.
 
 ---
 
@@ -384,14 +423,14 @@ PDF
 
 ## Tasks
 
-- [ ] Extract embedded images
-- [ ] Save images locally
-- [ ] Record page position if available
-- [ ] Associate image with page
-- [ ] Associate image with question
-- [ ] Store image metadata
-- [ ] Generate thumbnails
-- [ ] Display extracted images in UI
+- [x] Extract embedded images
+- [x] Save images locally
+- [x] Record page position if available
+- [x] Associate image with page
+- [x] Associate image with question
+- [x] Store image metadata
+- [x] Generate thumbnails
+- [x] Display extracted images in UI
 
 ---
 
@@ -515,6 +554,10 @@ Pages 14–15
 MCQ
 Topics: Deadlock, Resource Allocation
 ```
+
+Completed: 2026-09-02T00:00:00+05:30
+
+Verified: `questions` table extended via `002_add_question_extraction_metadata.sql` (start_page, end_page, start_offset, end_offset, confidence, question_type, options_json, extraction_notes_json, images_json) with index `idx_questions_document_start_end`; `questions.Repository.Insert` and `List`/`GetByID` updated; `QuestionCard` renders start/end pages, question_type chip, options list, confidence percentage, and per-question images; `lib/api.ts` parses JSON fields; document detail page shows `Pages 14–15` and image association.
 
 ---
 

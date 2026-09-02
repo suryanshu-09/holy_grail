@@ -16,6 +16,8 @@ const (
 type Repository interface {
 	List(ctx context.Context, f Filter) ([]Question, error)
 	GetByID(ctx context.Context, id string) (Question, error)
+	// Insert persists a new question record.
+	Insert(ctx context.Context, q Question) error
 }
 
 // Service contains the business rules for questions.

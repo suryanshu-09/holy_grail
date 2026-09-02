@@ -23,11 +23,36 @@ export interface Question {
   question_number?: string | null;
   question_text?: string | null;
   page_number?: number | null;
+  start_page?: number | null;
+  end_page?: number | null;
+  start_offset?: number | null;
+  end_offset?: number | null;
+  confidence?: number | null;
+  question_type?: string | null;
+  options_json?: string | null;
+  images_json?: string | null;
+  extraction_notes_json?: string | null;
   year?: number | null;
   subject?: string | null;
   difficulty?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+  // Parsed helpers (frontend convenience, not from API)
+  options?: string[];
+  images?: string[];
+}
+
+export interface DocumentImage {
+  name: string;
+  url: string;
+}
+
+export interface ExtractionSummary {
+  document_id: string;
+  page_count: number;
+  extracted_pages: number;
+  pages_needing_ocr: number;
+  error_pages: number;
 }
 
 export interface DocumentFilters {
@@ -49,6 +74,8 @@ export interface QuestionFilters {
   offset?: number;
   subject?: string;
   year?: number;
+  document_id?: string;
+  topic_id?: string;
 }
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080/api/v1';
@@ -100,14 +127,61 @@ export async function listTopics(filters?: TopicFilters): Promise<Topic[]> {
 }
 
 export async function listQuestions(filters?: QuestionFilters): Promise<Question[]> {
-  return request<Question[]>(
+  const qs = await request<Question[]>(
     buildUrl('/questions', {
       limit: filters?.limit,
       offset: filters?.offset,
       subject: filters?.subject,
       year: filters?.year,
+      document_id: filters?.document_id,
+      topic_id: filters?.topic_id,
     })
   );
+  // Parse JSON string fields into arrays for convenience
+  return qs.map((q) => {
+    let options: string[] | undefined;
+    let images: string[] | undefined;
+    try {
+      if (q.options_json) options = JSON.parse(q.options_json);
+    } catch {}
+    try {
+      if (q.images_json) images = JSON.parse(q.images_json);
+    } catch {}
+    return { ...q, options, images };
+  });
+}
+
+export async function listDocumentImages(documentId: string): Promise<DocumentImage[]> {
+  return request<DocumentImage[]>(buildUrl(`/documents/${documentId}/images`, {}));
+}
+
+export async function extractDocument(documentId: string): Promise<ExtractionSummary> {
+  const res = await fetch(`${BASE_URL}/documents/${documentId}/extract`, { method: 'POST' });
+  if (!res.ok) {
+    const body = await res.text();
+    try {
+      const parsed = JSON.parse(body);
+      if (parsed.error?.message) throw new Error(parsed.error.message);
+    } catch {}
+    throw new Error(`Extraction failed: ${res.status} ${res.statusText}`);
+  }
+  return (await res.json()) as ExtractionSummary;
+}
+
+export async function previewExtraction(documentId: string, pages?: number[]): Promise<any[]> {
+  const res = await fetch(`${BASE_URL}/documents/${documentId}/extract-preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(pages && pages.length ? { pages } : {}),
+  });
+  if (!res.ok) throw new Error(`Preview failed: ${res.status}`);
+  return await res.json();
+}
+
+export function getDocumentImageUrl(documentId: string, imageName: string, thumb = false): string {
+  const name = thumb ? `thumb_${imageName}` : imageName;
+  // Thumbnail is stored as thumb_<name> with png conversion; try thumb first but fallback to original
+  return `${BASE_URL}/documents/${documentId}/images/${name}`;
 }
 
 export async function healthCheck(): Promise<{ status: string }> {

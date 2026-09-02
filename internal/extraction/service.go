@@ -3,6 +3,7 @@ package extraction
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
@@ -122,6 +123,20 @@ func (s *Service) ExtractFile(ctx context.Context, documentID, path string) (Doc
 		}
 
 		result.Pages = append(result.Pages, page)
+	}
+
+	// Image extraction: preserve embedded images per page, record positions,
+	// save files locally and generate thumbnails. Failures are non-fatal.
+	// Clean previous images dir to avoid stale files on re-extraction.
+	imagesRoot := filepath.Join(s.root, documentLayout, documentID, imagesDirName)
+	_ = os.RemoveAll(imagesRoot)
+	_ = os.MkdirAll(imagesRoot, 0o755)
+	if imageMap := s.extractImages(ctx, documentID, path, reader); len(imageMap) > 0 {
+		for idx, pg := range result.Pages {
+			if refs, ok := imageMap[pg.Number]; ok && len(refs) > 0 {
+				result.Pages[idx].Images = refs
+			}
+		}
 	}
 
 	// Debug output is purely diagnostic: like the OCR fallback above, write

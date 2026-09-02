@@ -20,8 +20,8 @@ type DebugSummaryPage struct {
 // character counts and needs-OCR flags, so extraction quality can be judged
 // without opening each page file.
 type DebugSummary struct {
-	DocumentID string        `json:"document_id"`
-	PageCount  int           `json:"page_count"`
+	DocumentID string             `json:"document_id"`
+	PageCount  int                `json:"page_count"`
 	Pages      []DebugSummaryPage `json:"pages"`
 }
 
@@ -93,4 +93,42 @@ func buildSummary(e DocumentExtraction) DebugSummary {
 		})
 	}
 	return summary
+}
+
+// WriteQuestions persists the extracted questions for a document as
+// <root>/<documentID>/questions.json plus per-question question-NNN.json files.
+// It is used to keep raw extraction artifacts for replay and QA. Unlike Write,
+// it does not clear the directory so page dumps and question dumps coexist.
+func (w *DebugWriter) WriteQuestions(documentID string, qs []PreviewQuestion) error {
+	if !safeSegment(documentID) {
+		return fmt.Errorf("extraction: unsafe document id %q", documentID)
+	}
+	dir := filepath.Join(w.root, documentID)
+	if !withinRoot(w.root, dir) {
+		return fmt.Errorf("extraction: resolved path escapes root: %q", dir)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("extraction: create debug dir: %w", err)
+	}
+	data, err := json.MarshalIndent(qs, "", "  ")
+	if err != nil {
+		return fmt.Errorf("extraction: encode questions: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "questions.json"), append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("extraction: write questions.json: %w", err)
+	}
+	for i, q := range qs {
+		b, _ := json.MarshalIndent(q, "", "  ")
+		name := filepath.Join(dir, fmt.Sprintf("question-%03d.json", i+1))
+		_ = os.WriteFile(name, b, 0o644)
+	}
+	// also store a metrics snapshot for triage
+	metrics := map[string]interface{}{
+		"document_id":    documentID,
+		"question_count": len(qs),
+	}
+	if mdata, err := json.MarshalIndent(metrics, "", "  "); err == nil {
+		_ = os.WriteFile(filepath.Join(dir, "extraction_metrics.json"), append(mdata, '\n'), 0o644)
+	}
+	return nil
 }

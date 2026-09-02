@@ -2,7 +2,15 @@ package extraction
 
 // ImageRef references an image embedded on a PDF page.
 type ImageRef struct {
-	Name string `json:"name"`
+	Name          string  `json:"name"`
+	Page          int     `json:"page,omitempty"`
+	X             float64 `json:"x,omitempty"`
+	Y             float64 `json:"y,omitempty"`
+	Width         float64 `json:"width,omitempty"`
+	Height        float64 `json:"height,omitempty"`
+	StoragePath   string  `json:"storage_path,omitempty"`
+	ThumbnailPath string  `json:"thumbnail_path,omitempty"`
+	Format        string  `json:"format,omitempty"`
 }
 
 // Page is the extracted representation of a single PDF page. Error is

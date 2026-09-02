@@ -25,6 +25,7 @@ func handleQuestions(svc *questions.Service) http.Handler {
 
 		f := questions.Filter{Limit: pg.Limit, Offset: pg.Offset}
 		q := r.URL.Query()
+		f.DocumentID = q.Get("document_id")
 		f.Subject = q.Get("subject")
 		y, convErr := questions.ParseYear(q.Get("year"))
 		if convErr != nil {

@@ -42,7 +42,11 @@ export default function QuizPage() {
   }, [load])
 
   const current = questions[currentIndex]
-  const options = useMemo(buildOptions, [])
+  const options = useMemo(() => {
+    const parsed = current?.options
+    if (parsed && parsed.length > 0) return parsed
+    return buildOptions()
+  }, [current])
   const selected = selections[currentIndex] ?? null
   const answeredCount = selections.filter((s) => s !== null).length
 
@@ -100,7 +104,13 @@ export default function QuizPage() {
         questionText={current.question_text ?? undefined}
         subject={current.subject ?? undefined}
         year={current.year ?? undefined}
-        pageNumber={current.page_number ?? undefined}
+        pageNumber={current.page_number ?? current.start_page ?? undefined}
+        startPage={current.start_page ?? undefined}
+        endPage={current.end_page ?? undefined}
+        questionType={current.question_type ?? undefined}
+        images={current.images}
+        documentId={current.document_id ?? undefined}
+        confidence={current.confidence ?? undefined}
         options={options}
         onAnswer={handleAnswer}
         selectedIndex={selected}
