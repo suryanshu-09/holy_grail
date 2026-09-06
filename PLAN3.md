@@ -6,6 +6,7 @@ Automatically determine which topics each question belongs to.
 
 ---
 
+
 ## Example
 
 Question:
@@ -134,15 +135,15 @@ Explain the four necessary conditions...
 
 ## Tasks
 
-- [ ] Create `Embedder` interface
-- [ ] Select embedding model
-- [ ] Generate embeddings
-- [ ] Store vectors in pgvector
-- [ ] Store embedding model name
-- [ ] Handle embedding failures
-- [ ] Add retry mechanism
-- [ ] Batch embedding requests
-- [ ] Avoid embedding duplicate questions
+- [x] Create `Embedder` interface
+- [x] Select embedding model
+- [x] Generate embeddings
+- [x] Store vectors in pgvector
+- [x] Store embedding model name
+- [x] Handle embedding failures
+- [x] Add retry mechanism
+- [x] Batch embedding requests
+- [x] Avoid embedding duplicate questions
 
 ---
 
@@ -157,6 +158,10 @@ Do not silently change embedding models without considering re-indexing.
 ## Completion Criteria
 
 Every processed question has an embedding.
+
+Completed: 2026-09-06T00:00:00+05:30
+
+Verified: `internal/embeddings` provides a model-pinned OpenAI `Embedder`, retrying batch service, rich Subject/Topics/Question input, content-hash skipping, and database-side vector reuse for duplicates. Migration `004_add_embedding_metadata.sql` records input hashes and updates. Extraction invokes embeddings after classification when `OPENAI_API_KEY` is configured; `POST /api/v1/documents/{id}/embed` and the document UI support safe manual retries. `OPENAI_EMBEDDING_MODEL` defaults to `text-embedding-3-small`; changing models requires a vector schema migration and full re-index.
 
 ---
 
@@ -563,4 +568,3 @@ The user can always ask:
 and the application can answer.
 
 ---
-

@@ -28,6 +28,7 @@ type RouterDeps struct {
 	Questions  *questions.Service
 	Topics     *topics.Service
 	Classifier ClassifierPipeline
+	Embedder   EmbeddingPipeline
 }
 
 // NewRouter builds the versioned route table wrapped in middleware.
@@ -39,6 +40,7 @@ func NewRouter(cfg *config.AppConfig, deps RouterDeps) http.Handler {
 	mux.Handle(APIVersion+"/documents", handleDocuments(deps.Documents, cfg.MaxUploadBytes))
 	mux.Handle("POST "+APIVersion+"/documents/{id}/extract", handleExtractDocument(deps.Documents, deps.Extraction))
 	mux.Handle("POST "+APIVersion+"/documents/{id}/extract-preview", handleExtractPreview(deps.Documents, deps.Extraction))
+	mux.Handle("POST "+APIVersion+"/documents/{id}/embed", handleEmbedDocument(deps.Documents, deps.Embedder))
 	mux.Handle("GET "+APIVersion+"/documents/{id}/images/{name}", handleDocumentImages(cfg.DataDir))
 	mux.Handle("GET "+APIVersion+"/documents/{id}/images", handleListDocumentImages(cfg.DataDir))
 	mux.Handle(APIVersion+"/questions", handleQuestions(deps.Questions))

@@ -14,6 +14,7 @@ import (
 	"github.com/suryanshu-09/holy_grail/internal/config"
 	"github.com/suryanshu-09/holy_grail/internal/database"
 	"github.com/suryanshu-09/holy_grail/internal/documents"
+	"github.com/suryanshu-09/holy_grail/internal/embeddings"
 	"github.com/suryanshu-09/holy_grail/internal/extraction"
 	"github.com/suryanshu-09/holy_grail/internal/llm"
 	"github.com/suryanshu-09/holy_grail/internal/logging"
@@ -40,6 +41,7 @@ func main() {
 	documentRepo := documents.NewRepository(db)
 	questionRepo := questions.NewRepository(db)
 	topicRepo := topics.NewRepository(db)
+	embeddingRepo := embeddings.NewRepository(db)
 
 	store, err := storage.NewLocalStore(cfg.DataDir)
 	if err != nil {
@@ -65,6 +67,7 @@ func main() {
 	}
 	// Wire topic classifier: LLM when OPENAI_API_KEY set, otherwise heuristic fallback.
 	// Also wire LLM fallback for extraction when key is present (reuses same client).
+	var embeddingPipeline *embeddings.Service
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
 		openai, oErr := llm.NewOpenAIClient(key, "gpt-3.5-turbo", "")
 		if oErr != nil {
@@ -80,10 +83,29 @@ func main() {
 			extractionSvc = extractionSvc.WithTopicClassifier(classifier, topicRepo)
 			logger.Info("LLM topic classifier enabled")
 		}
+		embedder, embedErr := embeddings.NewOpenAIEmbedder(key, cfg.EmbeddingModel, "")
+		if embedErr != nil {
+			logger.Warn("embedding pipeline disabled", "error", embedErr)
+		} else {
+			embeddingPipeline, embedErr = embeddings.NewService(questionRepo, topicRepo, embeddingRepo, embedder)
+			if embedErr != nil {
+				logger.Warn("embedding pipeline disabled", "error", embedErr)
+			} else {
+				embeddingPipeline.BatchSize = cfg.EmbeddingBatchSize
+				extractionSvc = extractionSvc.WithEmbeddingPipeline(embeddingPipeline)
+				logger.Info("OpenAI embedding pipeline enabled", "model", embedder.Model())
+			}
+		}
 	} else {
 		heuristic := topics.NewHeuristicClassifier()
 		extractionSvc = extractionSvc.WithTopicClassifier(heuristic, topicRepo)
 		logger.Info("heuristic topic classifier enabled (no OPENAI_API_KEY)")
+	}
+
+	classificationPipeline, err := extraction.NewClassificationPipeline(extractionSvc, documentRepo, questionRepo)
+	if err != nil {
+		logger.Error("failed to initialise classification pipeline", "error", err)
+		os.Exit(1)
 	}
 
 	deps := apihttp.RouterDeps{
@@ -92,6 +114,8 @@ func main() {
 		Extraction: extractionSvc,
 		Questions:  questions.NewService(questionRepo),
 		Topics:     topics.NewService(topicRepo),
+		Classifier: classificationPipeline,
+		Embedder:   embeddingPipeline,
 	}
 
 	server := &http.Server{

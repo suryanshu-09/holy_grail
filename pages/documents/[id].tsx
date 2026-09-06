@@ -3,7 +3,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { EmptyState, ErrorState, LoadingState } from '../../components/ui'
 import { QuestionCard } from '../../components/QuestionCard'
-import { listDocuments, listQuestions, listTopicsForQuestion, classifyDocument, extractDocument, getBaseUrl, type Document, type Question, type Topic, type DocumentImage } from '../../lib/api'
+import { listDocuments, listQuestions, listTopicsForQuestion, classifyDocument, embedDocument, extractDocument, getBaseUrl, type Document, type Question, type Topic, type DocumentImage } from '../../lib/api'
 
 const statusStyles: Record<string, string> = {
   uploaded: 'bg-gray-100 text-gray-700',
@@ -40,6 +40,8 @@ export default function DocumentDetailPage() {
   const [topicsByQuestion, setTopicsByQuestion] = useState<Record<string, Topic[]>>({})
   const [classifying, setClassifying] = useState(false)
   const [classifyMsg, setClassifyMsg] = useState<string | null>(null)
+  const [embedding, setEmbedding] = useState(false)
+  const [embeddingMsg, setEmbeddingMsg] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     if (typeof id !== 'string') return
@@ -140,6 +142,21 @@ export default function DocumentDetailPage() {
     }
   }
 
+  const handleEmbed = async () => {
+    if (typeof id !== 'string') return
+    setEmbedding(true)
+    setEmbeddingMsg(null)
+    try {
+      const res = await embedDocument(id)
+      const completed = res.embedded + res.reused
+      setEmbeddingMsg(res.failed > 0 ? `Embedded ${completed} questions; ${res.failed} failed` : `Embedded ${completed} questions`)
+    } catch (err) {
+      setEmbeddingMsg(err instanceof Error ? err.message : 'Embedding failed')
+    } finally {
+      setEmbedding(false)
+    }
+  }
+
   if (loading) return <LoadingState label="Loading document..." />
   if (error) return <ErrorState message={error} onRetry={load} />
   if (!document)
@@ -198,6 +215,13 @@ export default function DocumentDetailPage() {
             {classifying ? 'Classifying…' : 'Classify topics'}
           </button>
           <button
+            onClick={handleEmbed}
+            disabled={embedding}
+            className="rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {embedding ? 'Embedding…' : 'Generate embeddings'}
+          </button>
+          <button
             onClick={() => {
               loadQuestions()
               loadImages()
@@ -209,6 +233,7 @@ export default function DocumentDetailPage() {
         </div>
         {extractMsg && <p className="mt-3 text-sm text-gray-600">{extractMsg}</p>}
         {classifyMsg && <p className="mt-2 text-sm text-gray-600">{classifyMsg}</p>}
+        {embeddingMsg && <p className="mt-2 text-sm text-gray-600">{embeddingMsg}</p>}
       </div>
 
       <div className="mt-8">

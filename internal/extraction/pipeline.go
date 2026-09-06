@@ -11,6 +11,7 @@ import (
 	"strconv"
 
 	"github.com/suryanshu-09/holy_grail/internal/documents"
+	"github.com/suryanshu-09/holy_grail/internal/embeddings"
 	"github.com/suryanshu-09/holy_grail/internal/questions"
 	"github.com/suryanshu-09/holy_grail/internal/topics"
 )
@@ -38,6 +39,7 @@ type ExtractionService struct {
 	debugWriter  *DebugWriter
 	classifier   topics.ClassifierInterface
 	topicRepo    topics.Repository
+	embeddings   *embeddings.Service
 }
 
 // WithLLMFallback attaches an LLM fallback to the extraction service.
@@ -71,6 +73,12 @@ func (s *ExtractionService) WithTopicRepo(r topics.Repository) *ExtractionServic
 func (s *ExtractionService) WithTopicClassifier(c topics.ClassifierInterface, r topics.Repository) *ExtractionService {
 	s.classifier = c
 	s.topicRepo = r
+	return s
+}
+
+// WithEmbeddingPipeline attaches the optional Phase 10 embedding pipeline.
+func (s *ExtractionService) WithEmbeddingPipeline(pipeline *embeddings.Service) *ExtractionService {
+	s.embeddings = pipeline
 	return s
 }
 
@@ -134,6 +142,17 @@ func (s *ExtractionService) Extract(ctx context.Context, documentID, storagePath
 		slog.Debug("extraction: classification skipped (no classifier or topic repo)", "document", documentID)
 		// Still write empty classification artifact for observability
 		_ = s.writeClassificationArtifact(documentID, nil)
+	}
+
+	if s.embeddings != nil {
+		embeddingResult, err := s.embeddings.EmbedDocument(ctx, documentID)
+		if err != nil {
+			slog.Warn("extraction: embedding failed (non-fatal)", "document", documentID, "error", err)
+		} else if embeddingResult.Failed > 0 {
+			slog.Warn("extraction: embedding partially completed", "document", documentID, "failed", embeddingResult.Failed)
+		}
+	} else {
+		slog.Debug("extraction: embeddings skipped (no embedder configured)", "document", documentID)
 	}
 
 	if err := s.repo.UpdateStatus(ctx, documentID, documents.StatusExtracted); err != nil {

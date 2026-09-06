@@ -8,16 +8,18 @@ import (
 
 // AppConfig holds application configuration
 type AppConfig struct {
-	Port              string
-	Host              string
-	Env               string
-	DatabaseURL       string
-	DBMaxOpenConns    int
-	DBMaxIdleConns    int
-	DBConnMaxLifetime time.Duration
-	CORSAllowedOrigin string
-	DataDir           string
-	MaxUploadBytes    int64
+	Port               string
+	Host               string
+	Env                string
+	DatabaseURL        string
+	DBMaxOpenConns     int
+	DBMaxIdleConns     int
+	DBConnMaxLifetime  time.Duration
+	CORSAllowedOrigin  string
+	DataDir            string
+	MaxUploadBytes     int64
+	EmbeddingModel     string
+	EmbeddingBatchSize int
 }
 
 // NewAppConfig creates AppConfig from environment variables
@@ -39,16 +41,18 @@ func NewAppConfig() AppConfig {
 	}
 
 	return AppConfig{
-		Port:              port,
-		Host:              host,
-		Env:               env,
-		DatabaseURL:       databaseURL,
-		DBMaxOpenConns:    getIntEnv("DB_MAX_OPEN_CONNS", 25),
-		DBMaxIdleConns:    getIntEnv("DB_MAX_IDLE_CONNS", 5),
-		DBConnMaxLifetime: getDurationEnv("DB_CONN_MAX_LIFETIME", 30*time.Minute),
-		CORSAllowedOrigin: getEnv("CORS_ALLOWED_ORIGIN", ""),
-		DataDir:           getEnv("STORAGE_PATH", "data"),
-		MaxUploadBytes:    getInt64Env("MAX_UPLOAD_BYTES", 50*1024*1024),
+		Port:               port,
+		Host:               host,
+		Env:                env,
+		DatabaseURL:        databaseURL,
+		DBMaxOpenConns:     getIntEnv("DB_MAX_OPEN_CONNS", 25),
+		DBMaxIdleConns:     getIntEnv("DB_MAX_IDLE_CONNS", 5),
+		DBConnMaxLifetime:  getDurationEnv("DB_CONN_MAX_LIFETIME", 30*time.Minute),
+		CORSAllowedOrigin:  getEnv("CORS_ALLOWED_ORIGIN", ""),
+		DataDir:            getEnv("STORAGE_PATH", "data"),
+		MaxUploadBytes:     getInt64Env("MAX_UPLOAD_BYTES", 50*1024*1024),
+		EmbeddingModel:     getEnv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
+		EmbeddingBatchSize: getIntEnv("EMBEDDING_BATCH_SIZE", 64),
 	}
 }
 

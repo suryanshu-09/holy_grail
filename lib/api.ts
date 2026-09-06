@@ -35,6 +35,16 @@ export interface ClassifyResult {
   status: string;
 }
 
+export interface EmbeddingResult {
+  document_id: string;
+  embedded: number;
+  reused: number;
+  skipped: number;
+  failed: number;
+  status: 'embedded' | 'partial';
+  failures?: Array<{ question_id: string; error: string }>;
+}
+
 export interface Question {
   id: string;
   document_id?: string | null;
@@ -176,6 +186,24 @@ export async function classifyDocument(documentId: string): Promise<ClassifyResu
     throw new Error(`Classification failed: ${res.status} ${res.statusText}`);
   }
   return (await res.json()) as ClassifyResult;
+}
+
+export async function embedDocument(documentId: string): Promise<EmbeddingResult> {
+  if (!documentId || !documentId.trim()) {
+    throw new Error('documentId is required');
+  }
+  const res = await fetch(`${BASE_URL}/documents/${documentId}/embed`, { method: 'POST' });
+  if (!res.ok) {
+    const body = await res.text();
+    try {
+      const parsed = JSON.parse(body) as ApiErrorBody;
+      if (parsed.error?.message) throw new Error(parsed.error.message);
+    } catch (error) {
+      if (error instanceof Error) throw error;
+    }
+    throw new Error(`Embedding failed: ${res.status} ${res.statusText}`);
+  }
+  return (await res.json()) as EmbeddingResult;
 }
 
 export async function listQuestionsByTopic(
