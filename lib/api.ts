@@ -106,6 +106,35 @@ export interface QuestionFilters {
   topic_id?: string;
 }
 
+export interface SearchFilters {
+  subject?: string;
+  year?: number;
+  year_min?: number;
+  year_max?: number;
+  document_id?: string;
+  topic?: string;
+  topic_id?: string;
+  question_type?: string;
+  difficulty?: string;
+  threshold?: number;
+  limit?: number;
+  offset?: number;
+}
+
+export interface SearchResult {
+  question: Question;
+  similarity: number;
+  distance: number;
+}
+
+export interface SearchResponse {
+  query: string;
+  results: SearchResult[];
+  count: number;
+  metric: string;
+  model: string;
+}
+
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080/api/v1';
 
 export function getBaseUrl(): string {
@@ -284,6 +313,67 @@ export async function mergeTopics(targetId: string, sourceIds: string[]): Promis
     throw new Error(`Merge failed: ${res.status} ${res.statusText}`);
   }
   return (await res.json()) as { status: string };
+}
+
+export async function searchQuestions(query: string, filters?: SearchFilters): Promise<SearchResponse> {
+  if (!query || !query.trim()) throw new Error('query is required');
+  const res = await fetch(buildUrl('/search', { q: query, ...filters } as Record<string, string | number | undefined>));
+  if (!res.ok) {
+    const body = await res.text();
+    try {
+      const parsed = JSON.parse(body) as ApiErrorBody;
+      if (parsed.error?.message) throw new Error(parsed.error.message);
+    } catch (e) {
+      if (e instanceof Error && e.message.includes('not found')) throw e;
+    }
+    throw new Error(`Search failed: ${res.status} ${res.statusText}`);
+  }
+  const data = (await res.json()) as SearchResponse;
+  // Parse nested question JSON strings
+  data.results = data.results.map((r) => {
+    let options: string[] | undefined;
+    let images: string[] | undefined;
+    try {
+      if (r.question.options_json) options = JSON.parse(r.question.options_json);
+    } catch {}
+    try {
+      if (r.question.images_json) images = JSON.parse(r.question.images_json);
+    } catch {}
+    return { ...r, question: { ...r.question, options, images } };
+  });
+  return data;
+}
+
+export async function searchQuestionsPost(query: string, filters?: SearchFilters): Promise<SearchResponse> {
+  if (!query || !query.trim()) throw new Error('query is required');
+  const res = await fetch(`${BASE_URL}/search`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, ...filters }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    try {
+      const parsed = JSON.parse(body) as ApiErrorBody;
+      if (parsed.error?.message) throw new Error(parsed.error.message);
+    } catch (e) {
+      if (e instanceof Error && e.message.includes('not found')) throw e;
+    }
+    throw new Error(`Search failed: ${res.status} ${res.statusText}`);
+  }
+  const data = (await res.json()) as SearchResponse;
+  data.results = data.results.map((r) => {
+    let options: string[] | undefined;
+    let images: string[] | undefined;
+    try {
+      if (r.question.options_json) options = JSON.parse(r.question.options_json);
+    } catch {}
+    try {
+      if (r.question.images_json) images = JSON.parse(r.question.images_json);
+    } catch {}
+    return { ...r, question: { ...r.question, options, images } };
+  });
+  return data;
 }
 
 export async function listQuestions(filters?: QuestionFilters): Promise<Question[]> {

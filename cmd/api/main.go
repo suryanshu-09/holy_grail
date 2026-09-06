@@ -19,6 +19,7 @@ import (
 	"github.com/suryanshu-09/holy_grail/internal/llm"
 	"github.com/suryanshu-09/holy_grail/internal/logging"
 	"github.com/suryanshu-09/holy_grail/internal/questions"
+	"github.com/suryanshu-09/holy_grail/internal/search"
 	"github.com/suryanshu-09/holy_grail/internal/storage"
 	"github.com/suryanshu-09/holy_grail/internal/topics"
 )
@@ -108,6 +109,24 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Wire vector search: requires an embedder (OPENAI_API_KEY) and pgvector.
+	var searcher apihttp.Searcher
+	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+		if queryEmbedder, qErr := embeddings.NewOpenAIEmbedder(key, cfg.EmbeddingModel, ""); qErr == nil {
+			repo := search.NewRepository(db, search.DefaultMetric, queryEmbedder.Model())
+			if svc, sErr := search.NewService(repo, queryEmbedder); sErr == nil {
+				searcher = svc
+				logger.Info("vector search enabled", "metric", svc.Metric(), "model", svc.Model())
+			} else {
+				logger.Warn("vector search disabled", "error", sErr)
+			}
+		} else {
+			logger.Warn("vector search embedder failed", "error", qErr)
+		}
+	} else {
+		logger.Info("vector search disabled (no OPENAI_API_KEY)")
+	}
+
 	deps := apihttp.RouterDeps{
 		DB:         db,
 		Documents:  documents.NewService(documentRepo, store),
@@ -116,6 +135,7 @@ func main() {
 		Topics:     topics.NewService(topicRepo),
 		Classifier: classificationPipeline,
 		Embedder:   embeddingPipeline,
+		Searcher:   searcher,
 	}
 
 	server := &http.Server{

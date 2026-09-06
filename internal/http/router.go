@@ -29,6 +29,7 @@ type RouterDeps struct {
 	Topics     *topics.Service
 	Classifier ClassifierPipeline
 	Embedder   EmbeddingPipeline
+	Searcher   Searcher
 }
 
 // NewRouter builds the versioned route table wrapped in middleware.
@@ -54,6 +55,7 @@ func NewRouter(cfg *config.AppConfig, deps RouterDeps) http.Handler {
 		mux.Handle("POST "+APIVersion+"/documents/{id}/classify", handleClassifyDocumentWithServices(deps.Documents, deps.Topics, deps.Questions))
 	}
 	mux.Handle("GET "+APIVersion+"/topics/{id}/questions", handleTopicQuestions(deps.Questions, deps.Topics))
+	mux.Handle(APIVersion+"/search", handleSearch(deps.Searcher))
 
 	handler := httpx.Recover(mux)
 	handler = httpx.RequestLogging(handler)

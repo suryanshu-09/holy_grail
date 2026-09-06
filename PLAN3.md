@@ -195,13 +195,19 @@ Top K questions
 
 ## Tasks
 
-- [ ] Implement vector search query
-- [ ] Configure similarity metric
-- [ ] Implement top-K retrieval
-- [ ] Add metadata filtering
-- [ ] Add minimum similarity threshold
-- [ ] Return similarity scores
-- [ ] Test search quality
+- [x] Implement vector search query
+- [x] Configure similarity metric
+- [x] Implement top-K retrieval
+- [x] Add metadata filtering
+- [x] Add minimum similarity threshold
+- [x] Return similarity scores
+- [x] Test search quality
+
+---
+
+Completed: 2026-09-06T00:00:00+05:30
+
+Verified: `internal/search` provides model-pinned cosine (`<=>`) repository with `vectorLiteral` and threshold-to-distance mapping, dynamic metadata filtering for subject/year/year_min/year_max/document/topic/topic_id/question_type/difficulty via `EXISTS` subqueries, and top-K pagination with similarity=`1-distance` scoring. Migration `005_add_vector_search.sql` adds `vector_cosine_ops` ivfflat/HNSW indexes and filtering indexes; `Service.Search` embeds query via OpenAI `text-embedding-3-small` (1536 dims) and delegates to repository with clamping and threshold validation. HTTP `GET|POST /api/v1/search` via `handleSearch` supports `q`/`query`, all metadata query params and JSON body (camelCase/snake_case), validates threshold/limit/offset, returns `{query, results[{question, similarity, distance}], count, metric, model}` with 503 when not configured; wired in `cmd/api/main.go` and `internal/http/router.go`. Frontend `lib/api.ts` adds `searchQuestions`/`searchQuestionsPost` with `SearchFilters`/`SearchResponse` types. Tests `internal/search/service_test.go` verify cosine top-K ordering, metadata filters, threshold, pagination, and metric operators; `internal/http/search_test.go` covers GET/POST handler validation, camelCase, method and router integration; `go vet`/`go test`/`npm run build` pass.
 
 ---
 
