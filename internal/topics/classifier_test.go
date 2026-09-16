@@ -37,6 +37,10 @@ func (f *fakeLLM) ClassifyTopics(ctx context.Context, prompt string) (string, er
 	return `{"subject":"Operating Systems","topics":[]}`, nil
 }
 
+func (f *fakeLLM) GenerateQuiz(_ context.Context, _ string) (string, error) {
+	return `{"questions":[]}`, nil
+}
+
 func (f *fakeLLM) CallCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()

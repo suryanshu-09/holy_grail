@@ -176,6 +176,35 @@ export interface HybridResponse {
   debug?: HybridDebugInfo | null;
 }
 
+export type QuizMode = 'original' | 'mcq' | 'similar' | 'mixed';
+
+export interface QuizQuestion {
+  id?: string;
+  source_question_id: string;
+  document_id: string;
+  question: string;
+  options: string[];
+  correct_answer: number;
+  explanation: string;
+}
+
+export interface QuizResponse {
+  questions: QuizQuestion[];
+}
+
+export interface QuizFilters {
+  mode?: QuizMode;
+  num_questions?: number;
+  length?: number;
+  limit?: number;
+  difficulty?: string;
+  topics?: string[];
+  topic?: string;
+  subject?: string;
+  query?: string;
+  q?: string;
+}
+
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080/api/v1';
 
 export function getBaseUrl(): string {
@@ -466,6 +495,74 @@ export async function hybridRetrievePost(query: string, filters?: HybridFilters)
     throw new Error(`Hybrid retrieval failed: ${res.status} ${res.statusText}`);
   }
   return parseHybridQuestions((await res.json()) as HybridResponse);
+}
+
+function parseQuizError(status: number, statusText: string, body: string): Error {
+  try {
+    const parsed = JSON.parse(body) as ApiErrorBody;
+    if (parsed.error?.message) {
+      return new Error(parsed.error.message);
+    }
+  } catch {
+    // Fall through to generic message below.
+  }
+  return new Error(`Quiz generation failed: ${status} ${statusText || 'Unknown error'}`);
+}
+
+function buildQuizBody(filters?: QuizFilters): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  if (!filters) return body;
+  if (filters.mode !== undefined) body.mode = filters.mode;
+  if (filters.num_questions !== undefined) body.num_questions = filters.num_questions;
+  else if (filters.length !== undefined) body.length = filters.length;
+  else if (filters.limit !== undefined) body.limit = filters.limit;
+  if (filters.difficulty !== undefined) body.difficulty = filters.difficulty;
+  if (filters.topics !== undefined) body.topics = filters.topics;
+  if (filters.topic !== undefined) body.topic = filters.topic;
+  if (filters.subject !== undefined) body.subject = filters.subject;
+  if (filters.query !== undefined) body.query = filters.query;
+  if (filters.q !== undefined) body.q = filters.q;
+  return body;
+}
+
+export async function generateQuiz(filters?: QuizFilters): Promise<QuizResponse> {
+  const res = await fetch(`${BASE_URL}/quiz/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(buildQuizBody(filters)),
+  });
+  if (!res.ok) {
+    throw parseQuizError(res.status, res.statusText, await res.text());
+  }
+  return (await res.json()) as QuizResponse;
+}
+
+export async function generateQuizGet(filters?: QuizFilters): Promise<QuizResponse> {
+  const params: Record<string, string | number | undefined> = {};
+  if (filters?.mode) params.mode = filters.mode;
+  const length = filters?.num_questions ?? filters?.length ?? filters?.limit;
+  if (length !== undefined) params.length = length;
+  if (filters?.difficulty) params.difficulty = filters.difficulty;
+  if (filters?.subject) params.subject = filters.subject;
+  const query = filters?.query ?? filters?.q;
+  if (query) params.query = query;
+  const url = new URL(`${BASE_URL}/quiz/generate`);
+  if (filters?.topics) {
+    for (const t of filters.topics) {
+      if (t && t.trim()) url.searchParams.append('topics', t);
+    }
+  }
+  if (filters?.topic) url.searchParams.set('topic', filters.topic);
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== '') {
+      url.searchParams.set(key, String(value));
+    }
+  }
+  const res = await fetch(url.toString());
+  if (!res.ok) {
+    throw parseQuizError(res.status, res.statusText, await res.text());
+  }
+  return (await res.json()) as QuizResponse;
 }
 
 export async function listQuestions(filters?: QuestionFilters): Promise<Question[]> {

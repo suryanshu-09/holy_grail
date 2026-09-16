@@ -19,6 +19,7 @@ import (
 	"github.com/suryanshu-09/holy_grail/internal/llm"
 	"github.com/suryanshu-09/holy_grail/internal/logging"
 	"github.com/suryanshu-09/holy_grail/internal/questions"
+	"github.com/suryanshu-09/holy_grail/internal/quiz"
 	"github.com/suryanshu-09/holy_grail/internal/search"
 	"github.com/suryanshu-09/holy_grail/internal/storage"
 	"github.com/suryanshu-09/holy_grail/internal/topics"
@@ -69,6 +70,7 @@ func main() {
 	// Wire topic classifier: LLM when OPENAI_API_KEY set, otherwise heuristic fallback.
 	// Also wire LLM fallback for extraction when key is present (reuses same client).
 	var embeddingPipeline *embeddings.Service
+	var quizLLM quiz.QuizLLM
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
 		openai, oErr := llm.NewOpenAIClient(key, "gpt-3.5-turbo", "")
 		if oErr != nil {
@@ -83,6 +85,8 @@ func main() {
 			classifier := topics.NewClassifier(openai, 3, 100*time.Millisecond)
 			extractionSvc = extractionSvc.WithTopicClassifier(classifier, topicRepo)
 			logger.Info("LLM topic classifier enabled")
+			quizLLM = openai
+			logger.Info("LLM quiz generator enabled")
 		}
 		embedder, embedErr := embeddings.NewOpenAIEmbedder(key, cfg.EmbeddingModel, "")
 		if embedErr != nil {
@@ -137,16 +141,49 @@ func main() {
 		logger.Info("vector search disabled (no OPENAI_API_KEY)")
 	}
 
+	// Wire quiz generation: fake-safe deterministic Original-PYQ fallback when
+	// no OPENAI key (LLM nil), LLM generator when the key is present.
+	// Retrieval prefers hybrid search when available, else the questions list
+	// API with topic resolution via the topics service.
+	questionsSvc := questions.NewService(questionRepo)
+	topicsSvc := topics.NewService(topicRepo)
+	var quizRetriever quiz.Retriever
+	if hybridSearcher != nil {
+		quizRetriever = &quiz.HybridRetriever{Hybrid: hybridSearcher}
+		logger.Info("quiz retrieval via hybrid search")
+	} else {
+		quizRetriever = &quiz.QuestionRetriever{
+			Questions: questionsSvc,
+			TopicsForQuestion: func(ctx context.Context, questionID string) ([]string, error) {
+				ts, err := topicsSvc.ListTopicsForQuestion(ctx, questionID)
+				if err != nil {
+					return nil, err
+				}
+				names := make([]string, 0, len(ts))
+				for _, t := range ts {
+					names = append(names, t.Name)
+				}
+				return names, nil
+			},
+		}
+		logger.Info("quiz retrieval via questions list (original-PYQ fallback safe)")
+	}
+	quizGenerator := &quiz.QuizGenerator{Retriever: quizRetriever, LLM: quizLLM}
+	if quizLLM == nil {
+		logger.Info("quiz LLM disabled (no OPENAI_API_KEY): deterministic Original-PYQ fallback")
+	}
+
 	deps := apihttp.RouterDeps{
 		DB:             db,
 		Documents:      documents.NewService(documentRepo, store),
 		Extraction:     extractionSvc,
-		Questions:      questions.NewService(questionRepo),
-		Topics:         topics.NewService(topicRepo),
+		Questions:      questionsSvc,
+		Topics:         topicsSvc,
 		Classifier:     classificationPipeline,
 		Embedder:       embeddingPipeline,
 		Searcher:       searcher,
 		HybridSearcher: hybridSearcher,
+		Quiz:           quizGenerator,
 	}
 
 	server := &http.Server{

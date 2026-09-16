@@ -414,19 +414,23 @@ Combine multiple question types.
 
 ## Tasks
 
-- [ ] Create quiz generation service
-- [ ] Define strict output schema
-- [ ] Validate LLM output
-- [ ] Reject malformed responses
-- [ ] Implement retries
-- [ ] Preserve source question ID
-- [ ] Prevent duplicate questions
-- [ ] Generate explanations
-- [ ] Support quiz length
-- [ ] Support difficulty
-- [ ] Support topic filtering
+- [x] Create quiz generation service
+- [x] Define strict output schema
+- [x] Validate LLM output
+- [x] Reject malformed responses
+- [x] Implement retries
+- [x] Preserve source question ID
+- [x] Prevent duplicate questions
+- [x] Generate explanations
+- [x] Support quiz length
+- [x] Support difficulty
+- [x] Support topic filtering
 
 ---
+
+Completed: 2026-09-16
+
+Verified: `internal/quiz` provides the quiz generation service (`service.go` with `QuizGenerator` backed by hybrid retrieval, `model.go` strict QuizRequest/QuizResponse schema, `validate.go` strict parsing that rejects malformed LLM output, `prompt.go` generation prompts); all 4 modes supported (original/mcq/similar/mixed) with per-question explanations and `source_question_id` traceability preserved on every item; deterministic dedupe by source question ID plus in-memory difficulty/subject filtering; retries up to `DefaultMaxAttempts` (3 attempts) with fallback to deterministic Original PYQs, never silently repairing bad output; quiz length via `NumQuestions` (length/limit/num_questions aliases) and difficulty/topic/subject filtering pushed to retrieval and re-checked in-memory; HTTP `GET|POST /api/v1/quiz/generate` via `internal/http/quiz.go` (`handleQuizGenerate`, wired in router) with alias-tolerant body/query params and validation; frontend `lib/api.ts` adds `QuizMode`/`QuizQuestion`/`QuizResponse`/`QuizFilters` types and `generateQuiz`/`generateQuizGet` (GET+POST) helpers; tests `internal/quiz/service_test.go` + `quiz_test.go` and `internal/http/quiz_test.go` cover schema validation, retries, dedupe, explanations, length/difficulty/topic filtering and handler validation; `go vet`/`go test`/`npm run build` pass.
 
 # 19. Phase 14 — Quiz UI
 

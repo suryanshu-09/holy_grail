@@ -35,6 +35,10 @@ func (f *fakeLLMForIntegration) ClassifyTopics(ctx context.Context, prompt strin
 	return `{"subject":"Operating Systems","topics":[]}`, nil
 }
 
+func (f *fakeLLMForIntegration) GenerateQuiz(_ context.Context, _ string) (string, error) {
+	return `{"questions":[]}`, nil
+}
+
 var _ llm.Client = (*fakeLLMForIntegration)(nil)
 
 // memQuestionRepo is an in-memory questions repo for integration test.

@@ -365,6 +365,13 @@ func (f *fakeLLMClient) ClassifyTopics(_ context.Context, _ string) (string, err
 	return f.resp, nil
 }
 
+func (f *fakeLLMClient) GenerateQuiz(_ context.Context, _ string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.resp, nil
+}
+
 func TestExtractQuestionsPersistsAndWritesDebugArtifacts(t *testing.T) {
 	root := t.TempDir()
 	extractor, err := NewService(root)

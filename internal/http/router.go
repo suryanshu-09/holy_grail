@@ -31,6 +31,7 @@ type RouterDeps struct {
 	Embedder       EmbeddingPipeline
 	Searcher       Searcher
 	HybridSearcher HybridSearcher
+	Quiz           QuizGenerator
 }
 
 // NewRouter builds the versioned route table wrapped in middleware.
@@ -57,6 +58,7 @@ func NewRouter(cfg *config.AppConfig, deps RouterDeps) http.Handler {
 	}
 	mux.Handle("GET "+APIVersion+"/topics/{id}/questions", handleTopicQuestions(deps.Questions, deps.Topics))
 	mux.Handle(APIVersion+"/search", handleSearch(deps.Searcher, deps.HybridSearcher))
+	mux.Handle(APIVersion+"/quiz/generate", handleQuizGenerate(deps.Quiz))
 
 	handler := httpx.Recover(mux)
 	handler = httpx.RequestLogging(handler)

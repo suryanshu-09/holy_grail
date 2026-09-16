@@ -19,6 +19,14 @@ type Client interface {
 	// raw JSON (already stripped of markdown fences when produced by OpenAI)
 	// that the caller must validate with topics.ParseClassificationResult.
 	ClassifyTopics(ctx context.Context, prompt string) (string, error)
+	// GenerateQuiz sends a prompt and returns a JSON string that must conform
+	// to the quiz schema (questions with source_question_id, document_id,
+	// question, exactly 4 options, correct_answer index, explanation).
+	// The prompt is opaque to the client; callers build it via
+	// quiz.BuildQuizPrompt for determinism. The returned string is
+	// raw JSON (already stripped of markdown fences when produced by OpenAI)
+	// that the caller must validate with quiz.ParseQuizResponse.
+	GenerateQuiz(ctx context.Context, prompt string) (string, error)
 }
 
 // ErrInvalidResponse means the model returned something we couldn't parse.
