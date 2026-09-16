@@ -109,8 +109,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Wire vector search: requires an embedder (OPENAI_API_KEY) and pgvector.
+	// Wire vector + hybrid search: requires an embedder (OPENAI_API_KEY) and pgvector.
+	// Hybrid falls back to vector-only when the keyword branch or embedder is unavailable.
 	var searcher apihttp.Searcher
+	var hybridSearcher apihttp.HybridSearcher
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
 		if queryEmbedder, qErr := embeddings.NewOpenAIEmbedder(key, cfg.EmbeddingModel, ""); qErr == nil {
 			repo := search.NewRepository(db, search.DefaultMetric, queryEmbedder.Model())
@@ -120,6 +122,14 @@ func main() {
 			} else {
 				logger.Warn("vector search disabled", "error", sErr)
 			}
+			keywordRepo := search.NewKeywordRepository(db)
+			if hs, hErr := search.NewHybridService(repo, keywordRepo, queryEmbedder); hErr == nil {
+				hs.SetReranker(search.NewExactMatchReranker(0.1))
+				hybridSearcher = hs
+				logger.Info("hybrid search enabled", "metric", hs.Metric(), "model", hs.Model())
+			} else {
+				logger.Warn("hybrid search disabled (vector-only fallback)", "error", hErr)
+			}
 		} else {
 			logger.Warn("vector search embedder failed", "error", qErr)
 		}
@@ -128,14 +138,15 @@ func main() {
 	}
 
 	deps := apihttp.RouterDeps{
-		DB:         db,
-		Documents:  documents.NewService(documentRepo, store),
-		Extraction: extractionSvc,
-		Questions:  questions.NewService(questionRepo),
-		Topics:     topics.NewService(topicRepo),
-		Classifier: classificationPipeline,
-		Embedder:   embeddingPipeline,
-		Searcher:   searcher,
+		DB:             db,
+		Documents:      documents.NewService(documentRepo, store),
+		Extraction:     extractionSvc,
+		Questions:      questions.NewService(questionRepo),
+		Topics:         topics.NewService(topicRepo),
+		Classifier:     classificationPipeline,
+		Embedder:       embeddingPipeline,
+		Searcher:       searcher,
+		HybridSearcher: hybridSearcher,
 	}
 
 	server := &http.Server{

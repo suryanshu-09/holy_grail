@@ -290,15 +290,19 @@ Filtering
 
 ## Tasks
 
-- [ ] Implement metadata filtering
-- [ ] Implement keyword search
-- [ ] Combine retrieval methods
-- [ ] Deduplicate results
-- [ ] Implement scoring
-- [ ] Add optional reranking
-- [ ] Return retrieval explanation/debug information
+- [x] Implement metadata filtering
+- [x] Implement keyword search
+- [x] Combine retrieval methods
+- [x] Deduplicate results
+- [x] Implement scoring
+- [x] Add optional reranking
+- [x] Return retrieval explanation/debug information
 
 ---
+
+Completed: 2026-09-16
+
+Verified: hybrid retrieval combines metadata filtering (shared Filter pushed to both branches), postgres FTS keyword search (006_add_hybrid_retrieval.sql, KeywordRepository with ts_rank), and vector search via HybridService fusion with dedupe by question ID, weighted-sum + RRF scoring, optional ExactMatchReranker boost, and DebugInfo (vector/keyword/merged counts, weights, scoring, rerank flag); HTTP GET|POST /api/v1/search preserves Phase 11 vector API (default mode=vector, fallback when hybrid unavailable) and supports mode/keyword/vector_weight/keyword_weight/rerank/debug params; frontend lib/api.ts adds HybridFilters/HybridResponse types and hybridRetrieve/hybridRetrievePost (GET+POST) helpers; go vet/go test/npm run build pass.
 
 ## Example
 

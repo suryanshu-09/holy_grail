@@ -135,13 +135,54 @@ export interface SearchResponse {
   model: string;
 }
 
+export type RetrievalMode = 'vector' | 'keyword' | 'hybrid';
+
+export interface HybridFilters extends SearchFilters {
+  mode?: RetrievalMode;
+  keyword?: string;
+  vector_weight?: number;
+  keyword_weight?: number;
+  rerank?: boolean;
+  debug?: boolean;
+  include_debug?: boolean;
+}
+
+export interface HybridResult {
+  question: Question;
+  vector_score: number;
+  keyword_score: number;
+  combined_score: number;
+  sources: string[];
+  rerank_boost?: number;
+}
+
+export interface HybridDebugInfo {
+  query: string;
+  vector_candidates: number;
+  keyword_candidates: number;
+  merged_candidates: number;
+  vector_weight: number;
+  keyword_weight: number;
+  scoring: string;
+  rerank_enabled: boolean;
+}
+
+export interface HybridResponse {
+  query: string;
+  results: HybridResult[];
+  count: number;
+  metric: string;
+  model: string;
+  debug?: HybridDebugInfo | null;
+}
+
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080/api/v1';
 
 export function getBaseUrl(): string {
   return BASE_URL;
 }
 
-function buildUrl(path: string, params?: Record<string, string | number | undefined>): string {
+function buildUrl(path: string, params?: Record<string, string | number | boolean | undefined>): string {
   const url = new URL(`${BASE_URL}${path}`);
   if (params) {
     for (const [key, value] of Object.entries(params)) {
@@ -374,6 +415,57 @@ export async function searchQuestionsPost(query: string, filters?: SearchFilters
     return { ...r, question: { ...r.question, options, images } };
   });
   return data;
+}
+
+function parseHybridQuestions(data: HybridResponse): HybridResponse {
+  data.results = data.results.map((r) => {
+    let options: string[] | undefined;
+    let images: string[] | undefined;
+    try {
+      if (r.question.options_json) options = JSON.parse(r.question.options_json);
+    } catch {}
+    try {
+      if (r.question.images_json) images = JSON.parse(r.question.images_json);
+    } catch {}
+    return { ...r, question: { ...r.question, options, images } };
+  });
+  return data;
+}
+
+export async function hybridRetrieve(query: string, filters?: HybridFilters): Promise<HybridResponse> {
+  if (!query || !query.trim()) throw new Error('query is required');
+  const res = await fetch(buildUrl('/search', { q: query, ...filters } as Record<string, string | number | boolean | undefined>));
+  if (!res.ok) {
+    const body = await res.text();
+    try {
+      const parsed = JSON.parse(body) as ApiErrorBody;
+      if (parsed.error?.message) throw new Error(parsed.error.message);
+    } catch (e) {
+      if (e instanceof Error && e.message.includes('not found')) throw e;
+    }
+    throw new Error(`Hybrid retrieval failed: ${res.status} ${res.statusText}`);
+  }
+  return parseHybridQuestions((await res.json()) as HybridResponse);
+}
+
+export async function hybridRetrievePost(query: string, filters?: HybridFilters): Promise<HybridResponse> {
+  if (!query || !query.trim()) throw new Error('query is required');
+  const res = await fetch(`${BASE_URL}/search`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, ...filters }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    try {
+      const parsed = JSON.parse(body) as ApiErrorBody;
+      if (parsed.error?.message) throw new Error(parsed.error.message);
+    } catch (e) {
+      if (e instanceof Error && e.message.includes('not found')) throw e;
+    }
+    throw new Error(`Hybrid retrieval failed: ${res.status} ${res.statusText}`);
+  }
+  return parseHybridQuestions((await res.json()) as HybridResponse);
 }
 
 export async function listQuestions(filters?: QuestionFilters): Promise<Question[]> {

@@ -206,6 +206,227 @@ func TestHandleSearchGET_AllFilters(t *testing.T) {
 	}
 }
 
+type mockHybrid struct {
+	called bool
+	query  string
+	filter search.HybridFilter
+	resp   search.HybridResponse
+	err    error
+}
+
+func (m *mockHybrid) Search(_ context.Context, query string, filter search.HybridFilter) (search.HybridResponse, error) {
+	m.called = true
+	m.query = query
+	m.filter = filter
+	if m.err != nil {
+		return search.HybridResponse{}, m.err
+	}
+	if m.resp.Results == nil {
+		m.resp.Results = []search.HybridResult{}
+	}
+	m.resp.Query = query
+	m.resp.Count = len(m.resp.Results)
+	if m.resp.Metric == "" {
+		m.resp.Metric = search.DefaultMetric
+	}
+	if m.resp.Debug == nil {
+		m.resp.Debug = &search.DebugInfo{Query: query, Scoring: "weighted", VectorWeight: filter.VectorWeight, KeywordWeight: filter.KeywordWeight}
+	}
+	return m.resp, nil
+}
+
+func TestHandleSearchGET_HybridMode(t *testing.T) {
+	qt := "bankers algorithm"
+	q := questions.Question{ID: "q1", QuestionText: &qt}
+	hyb := &mockHybrid{resp: search.HybridResponse{Results: []search.HybridResult{{Question: q, CombinedScore: 0.9, Sources: []string{"vector", "keyword"}}}}}
+	vec := &mockSearcher{resp: search.Response{Results: []search.Result{}}}
+	handler := handleSearch(vec, hyb)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q=deadlock&mode=hybrid&keyword=bankers&vector_weight=0.7&keyword_weight=0.3&rerank=true&debug=true", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 got %d %s", w.Code, w.Body.String())
+	}
+	if !hyb.called {
+		t.Fatalf("hybrid search not called")
+	}
+	if vec.called {
+		t.Errorf("vector search should not be called in hybrid mode")
+	}
+	if hyb.query != "deadlock" {
+		t.Errorf("query = %q want deadlock", hyb.query)
+	}
+	if hyb.filter.KeywordQuery != "bankers" {
+		t.Errorf("keyword = %q want bankers", hyb.filter.KeywordQuery)
+	}
+	if hyb.filter.VectorWeight != 0.7 {
+		t.Errorf("vector_weight = %v want 0.7", hyb.filter.VectorWeight)
+	}
+	if hyb.filter.KeywordWeight != 0.3 {
+		t.Errorf("keyword_weight = %v want 0.3", hyb.filter.KeywordWeight)
+	}
+	if !hyb.filter.EnableRerank {
+		t.Errorf("rerank should be true")
+	}
+	var resp search.HybridResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Debug == nil {
+		t.Errorf("debug should be included when debug=true")
+	}
+}
+
+func TestHandleSearchGET_HybridNoDebugStrips(t *testing.T) {
+	hyb := &mockHybrid{resp: search.HybridResponse{Results: []search.HybridResult{}}}
+	vec := &mockSearcher{}
+	handler := handleSearch(vec, hyb)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q=test&mode=hybrid", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 got %d %s", w.Code, w.Body.String())
+	}
+	var resp search.HybridResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Debug != nil {
+		t.Errorf("debug should be stripped when not requested, got %+v", resp.Debug)
+	}
+}
+
+func TestHandleSearchGET_KeywordModeForcesKeywordOnly(t *testing.T) {
+	hyb := &mockHybrid{resp: search.HybridResponse{Results: []search.HybridResult{}}}
+	vec := &mockSearcher{}
+	handler := handleSearch(vec, hyb)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q=test&mode=keyword", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 got %d %s", w.Code, w.Body.String())
+	}
+	if !hyb.called {
+		t.Fatalf("hybrid not called for keyword mode")
+	}
+	if hyb.filter.VectorWeight != 0 || hyb.filter.KeywordWeight != 1 {
+		t.Errorf("keyword mode weights = %v/%v want 0/1", hyb.filter.VectorWeight, hyb.filter.KeywordWeight)
+	}
+}
+
+func TestHandleSearchGET_CamelCaseWeights(t *testing.T) {
+	hyb := &mockHybrid{resp: search.HybridResponse{Results: []search.HybridResult{}}}
+	vec := &mockSearcher{}
+	handler := handleSearch(vec, hyb)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q=test&mode=hybrid&vectorWeight=0.6&keywordWeight=0.4&includeDebug=true", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 got %d %s", w.Code, w.Body.String())
+	}
+	if hyb.filter.VectorWeight != 0.6 || hyb.filter.KeywordWeight != 0.4 {
+		t.Errorf("camelCase weights mismatch: %v/%v", hyb.filter.VectorWeight, hyb.filter.KeywordWeight)
+	}
+	var resp search.HybridResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Debug == nil {
+		t.Errorf("includeDebug camelCase should include debug")
+	}
+}
+
+func TestHandleSearchGET_InvalidMode(t *testing.T) {
+	hyb := &mockHybrid{}
+	vec := &mockSearcher{}
+	handler := handleSearch(vec, hyb)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q=test&mode=semantic", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid mode, got %d", w.Code)
+	}
+}
+
+func TestHandleSearchGET_NegativeWeight(t *testing.T) {
+	hyb := &mockHybrid{}
+	vec := &mockSearcher{}
+	handler := handleSearch(vec, hyb)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q=test&mode=hybrid&vector_weight=-1", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for negative weight, got %d", w.Code)
+	}
+}
+
+func TestHandleSearchPOST_Hybrid(t *testing.T) {
+	qt := "bankers"
+	q := questions.Question{ID: "q9", QuestionText: &qt}
+	hyb := &mockHybrid{resp: search.HybridResponse{Results: []search.HybridResult{{Question: q, CombinedScore: 0.5}}}}
+	vec := &mockSearcher{}
+	handler := handleSearch(vec, hyb)
+	body, _ := json.Marshal(map[string]interface{}{
+		"query": "deadlock", "mode": "hybrid", "keyword": "bankers",
+		"vector_weight": 0.7, "keywordWeight": 0.3, "rerank": true, "include_debug": true,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/search", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST hybrid expected 200 got %d %s", w.Code, w.Body.String())
+	}
+	if !hyb.called || hyb.query != "deadlock" {
+		t.Fatalf("hybrid query mismatch: %q", hyb.query)
+	}
+	if hyb.filter.KeywordQuery != "bankers" {
+		t.Errorf("keyword mismatch: %q", hyb.filter.KeywordQuery)
+	}
+	if hyb.filter.VectorWeight != 0.7 || hyb.filter.KeywordWeight != 0.3 {
+		t.Errorf("weights mismatch: %v/%v", hyb.filter.VectorWeight, hyb.filter.KeywordWeight)
+	}
+	if !hyb.filter.EnableRerank {
+		t.Errorf("rerank should be true")
+	}
+	var resp search.HybridResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Debug == nil {
+		t.Errorf("include_debug should include debug")
+	}
+}
+
+func TestHandleSearch_FallbackToVectorWhenHybridNil(t *testing.T) {
+	vec := &mockSearcher{resp: search.Response{Results: []search.Result{}}}
+	handler := handleSearch(vec, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q=test&mode=hybrid&keyword=bankers", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("fallback expected 200 got %d %s", w.Code, w.Body.String())
+	}
+	if !vec.called {
+		t.Errorf("expected fallback to vector search when hybrid nil")
+	}
+}
+
+func TestHandleHybridAlias(t *testing.T) {
+	hyb := &mockHybrid{resp: search.HybridResponse{Results: []search.HybridResult{}}}
+	vec := &mockSearcher{}
+	handler := handleHybrid(vec, hyb)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/search?q=test&mode=hybrid", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("handleHybrid expected 200 got %d %s", w.Code, w.Body.String())
+	}
+	if !hyb.called {
+		t.Errorf("handleHybrid should dispatch to hybrid searcher")
+	}
+}
+
 func TestRouter_SearchRoute(t *testing.T) {
 	mock := &mockSearcher{resp: search.Response{Results: []search.Result{}}}
 	cfg := &config.AppConfig{CORSAllowedOrigin: "*"}

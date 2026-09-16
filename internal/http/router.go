@@ -22,14 +22,15 @@ type Pinger interface {
 
 // RouterDeps wires the handler layer to the service layer.
 type RouterDeps struct {
-	DB         Pinger
-	Documents  *documents.Service
-	Extraction *extraction.ExtractionService
-	Questions  *questions.Service
-	Topics     *topics.Service
-	Classifier ClassifierPipeline
-	Embedder   EmbeddingPipeline
-	Searcher   Searcher
+	DB             Pinger
+	Documents      *documents.Service
+	Extraction     *extraction.ExtractionService
+	Questions      *questions.Service
+	Topics         *topics.Service
+	Classifier     ClassifierPipeline
+	Embedder       EmbeddingPipeline
+	Searcher       Searcher
+	HybridSearcher HybridSearcher
 }
 
 // NewRouter builds the versioned route table wrapped in middleware.
@@ -55,7 +56,7 @@ func NewRouter(cfg *config.AppConfig, deps RouterDeps) http.Handler {
 		mux.Handle("POST "+APIVersion+"/documents/{id}/classify", handleClassifyDocumentWithServices(deps.Documents, deps.Topics, deps.Questions))
 	}
 	mux.Handle("GET "+APIVersion+"/topics/{id}/questions", handleTopicQuestions(deps.Questions, deps.Topics))
-	mux.Handle(APIVersion+"/search", handleSearch(deps.Searcher))
+	mux.Handle(APIVersion+"/search", handleSearch(deps.Searcher, deps.HybridSearcher))
 
 	handler := httpx.Recover(mux)
 	handler = httpx.RequestLogging(handler)
