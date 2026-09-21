@@ -75,6 +75,11 @@ export interface DocumentImage {
   url: string;
 }
 
+// SourceQuestion is the original PYQ a quiz question was derived from.
+// Fetched via GET /api/v1/questions/{id} for traceability display
+// (original wording/pages/images + document backlink).
+export type SourceQuestion = Question;
+
 export interface ExtractionSummary {
   document_id: string;
   page_count: number;
@@ -769,6 +774,44 @@ export function getDocumentImageUrl(documentId: string, imageName: string, thumb
   const name = thumb ? `thumb_${imageName}` : imageName;
   // Thumbnail is stored as thumb_<name> with png conversion; try thumb first but fallback to original
   return `${BASE_URL}/documents/${documentId}/images/${name}`;
+}
+
+export async function getQuestionById(questionId: string): Promise<SourceQuestion> {
+  if (!questionId || !questionId.trim()) {
+    throw new Error('questionId is required');
+  }
+  const q = await request<Question>(
+    buildUrl(`/questions/${encodeURIComponent(questionId.trim())}`, {})
+  );
+  let options: string[] | undefined;
+  let images: string[] | undefined;
+  try {
+    if (q.options_json) options = JSON.parse(q.options_json);
+  } catch {}
+  try {
+    if (q.images_json) images = JSON.parse(q.images_json);
+  } catch {}
+  return { ...q, options, images };
+}
+
+export function getSourceQuestionImageUrls(question: SourceQuestion, thumb = false): string[] {
+  if (!question.document_id || !question.images || question.images.length === 0) {
+    return [];
+  }
+  return question.images.map((name) =>
+    getDocumentImageUrl(question.document_id as string, name, thumb)
+  );
+}
+
+export function getSourceQuestionImageUrl(
+  question: SourceQuestion,
+  imageName: string,
+  thumb = false
+): string | null {
+  if (!question.document_id || !imageName) {
+    return null;
+  }
+  return getDocumentImageUrl(question.document_id, imageName, thumb);
 }
 
 export async function healthCheck(): Promise<{ status: string }> {

@@ -585,14 +585,14 @@ Page 18
 
 ## Tasks
 
-- [ ] Store source question ID
-- [ ] Store source document ID
-- [ ] Show source information
-- [ ] Add "View Original"
-- [ ] Display original image
-- [ ] Display original wording
-- [ ] Preserve page number
-- [ ] Link back to document
+- [x] Store source question ID
+- [x] Store source document ID
+- [x] Show source information
+- [x] Add "View Original"
+- [x] Display original image
+- [x] Display original wording
+- [x] Preserve page number
+- [x] Link back to document
 
 ---
 
@@ -607,3 +607,7 @@ The user can always ask:
 and the application can answer.
 
 ---
+
+Completed: 2026-09-21
+
+Verified: `QuizQuestion` already stores `source_question_id` + `document_id`; backend adds `GET /api/v1/questions/{id}` via `handleQuestionByID` in `internal/http/questions.go` returning full `Question` record (question_text, start_page/end_page, images_json, document_id) wired in `internal/http/router.go`; frontend `lib/api.ts` adds `SourceQuestion` type plus `getQuestionById`/`getSourceQuestionImageUrls`/`getSourceQuestionImageUrl` helpers; new `components/quiz/SourceTraceability.tsx` shows source IDs with page badge (Pages start-end), "View Original" toggle with lazy fetch, original wording with reworded-from-original comparison, original images via document image URLs with thumbnail fallback, and document backlink to `/documents/[id]`; `components/quiz/QuizQuestionCard.tsx` embeds the panel (`showSource`/`source` props) and `components/quiz/QuizResults.tsx` surfaces it per question; tests `internal/http/questions_test.go` cover success (text/pages/images/document preserved), 404, 400 missing id, 405, 500, nil service and router wiring; `go vet ./...`, `go test ./...` and `npm run build` pass.

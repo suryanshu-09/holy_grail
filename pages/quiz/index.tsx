@@ -268,6 +268,8 @@ export default function QuizPage() {
       correct: submitted[i] && selections[i] !== null && selections[i] === q.correct_answer,
       selectedIndex: selections[i],
       correctAnswer: q.correct_answer,
+      sourceQuestionId: q.source_question_id || null,
+      documentId: q.document_id || null,
     }))
 
     // Per-topic accuracy: quiz items carry no topic, so attribute via the

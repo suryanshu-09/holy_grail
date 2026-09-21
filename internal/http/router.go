@@ -48,6 +48,7 @@ func NewRouter(cfg *config.AppConfig, deps RouterDeps) http.Handler {
 	mux.Handle("GET "+APIVersion+"/documents/{id}/images/{name}", handleDocumentImages(cfg.DataDir))
 	mux.Handle("GET "+APIVersion+"/documents/{id}/images", handleListDocumentImages(cfg.DataDir))
 	mux.Handle(APIVersion+"/questions", handleQuestions(deps.Questions))
+	mux.Handle("GET "+APIVersion+"/questions/{id}", handleQuestionByID(deps.Questions))
 	mux.Handle("GET "+APIVersion+"/questions/{id}/topics", handleGetQuestionTopics(deps.Topics))
 	mux.Handle("PATCH "+APIVersion+"/questions/{id}/topics", handleCorrectQuestionTopics(deps.Topics))
 	mux.Handle(APIVersion+"/topics", handleTopics(deps.Topics))

@@ -1,5 +1,6 @@
 import React from 'react';
-import type { QuizQuestion as QuizQuestionType } from '../../lib/api';
+import type { QuizQuestion as QuizQuestionType, SourceQuestion } from '../../lib/api';
+import { SourceTraceability } from './SourceTraceability';
 
 const LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
 
@@ -18,6 +19,10 @@ type Props = {
   isLast?: boolean;
   submitting?: boolean;
   className?: string;
+  /** Show the source-traceability panel (View Original). Defaults to true. */
+  showSource?: boolean;
+  /** Pre-fetched original PYQ; when omitted it is fetched lazily on toggle. */
+  source?: SourceQuestion | null;
 };
 
 function optionClassName(opts: {
@@ -58,6 +63,8 @@ export function QuizQuestionCard({
   isLast = false,
   submitting = false,
   className = '',
+  showSource = true,
+  source = null,
 }: Props) {
   const isCorrect = submitted && selectedIndex !== null && selectedIndex === question.correct_answer;
   const isIncorrect = submitted && selectedIndex !== null && selectedIndex !== question.correct_answer;
@@ -177,6 +184,18 @@ export function QuizQuestionCard({
             {question.explanation}
           </p>
         </div>
+      )}
+
+      {/* Source traceability — lazy View Original with page badge, document
+          backlink, original wording comparison and original images. */}
+      {showSource && question.source_question_id && question.document_id && (
+        <SourceTraceability
+          sourceQuestionId={question.source_question_id}
+          documentId={question.document_id}
+          generatedWording={question.question}
+          source={source}
+          className="mt-3"
+        />
       )}
     </div>
   );

@@ -1,4 +1,5 @@
 import React from 'react';
+import Link from 'next/link';
 
 export function formatQuizTime(totalSeconds: number): string {
   const safe = Math.max(0, Math.floor(totalSeconds || 0));
@@ -13,6 +14,10 @@ export type QuizResultDetail = {
   correct: boolean;
   selectedIndex: number | null;
   correctAnswer: number;
+  /** Original PYQ id (QuizQuestion.source_question_id) — renders a source link. */
+  sourceQuestionId?: string | null;
+  /** Owning document id (QuizQuestion.document_id) — links back to /documents/[id]. */
+  documentId?: string | null;
 };
 
 export type QuizTopicMetric = {
@@ -279,6 +284,23 @@ export function QuizResults({
             >
               <span className="font-semibold">Q{i + 1}.</span> {d.question}{' '}
               <span className="font-medium">{d.correct ? '✓' : '✕'}</span>
+              {(d.sourceQuestionId || d.documentId) && (
+                <span className="mt-1 block text-xs font-normal opacity-80">
+                  Source:{' '}
+                  {d.sourceQuestionId && (
+                    <span className="font-mono">{d.sourceQuestionId}</span>
+                  )}
+                  {d.sourceQuestionId && d.documentId && ' · '}
+                  {d.documentId && (
+                    <Link
+                      href={`/documents/${d.documentId}`}
+                      className="font-mono text-blue-600 hover:underline"
+                    >
+                      {d.documentId}
+                    </Link>
+                  )}
+                </span>
+              )}
             </li>
           ))}
         </ul>
