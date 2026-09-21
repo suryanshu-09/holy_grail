@@ -462,21 +462,25 @@ Consider the following...
 
 ## Tasks
 
-- [ ] Question card
-- [ ] Option selection
-- [ ] Submit answer
-- [ ] Disable modification after submission
-- [ ] Show correct/incorrect
-- [ ] Show explanation
-- [ ] Next question
-- [ ] Progress indicator
-- [ ] Quiz completion page
-- [ ] Score
-- [ ] Accuracy
-- [ ] Time spent
-- [ ] Retry quiz
+- [x] Question card
+- [x] Option selection
+- [x] Submit answer
+- [x] Disable modification after submission
+- [x] Show correct/incorrect
+- [x] Show explanation
+- [x] Next question
+- [x] Progress indicator
+- [x] Quiz completion page
+- [x] Score
+- [x] Accuracy
+- [x] Time spent
+- [x] Retry quiz
 
 ---
+
+Completed: 2026-09-21
+
+Verified: quiz setup form (`QuizSetupForm`) collects mode/length/difficulty/topic/subject/query and `pages/quiz/index.tsx` drives the full flow via `generateQuiz` from `lib/api.ts`; `QuizQuestionCard` renders options with selection, submit locks answers (options disabled after submission), and shows correct/incorrect feedback plus explanation; `QuizProgress` shows current position/answered count with a live elapsed timer; completion page (`QuizResults`) shows score, accuracy, time spent with per-question breakdown and retry (same filters) plus new-settings action; files touched: `pages/quiz/index.tsx`, `components/quiz/{index.ts,QuizSetupForm.tsx,QuizQuestionCard.tsx,QuizProgress.tsx,QuizResults.tsx}`; backend untouched (Phase 13 `GET|POST /api/v1/quiz/generate` reused as-is, no go vet/test needed); `npm run build` passes.
 
 # 20. Phase 15 — Quiz Evaluation
 
