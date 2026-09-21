@@ -539,6 +539,27 @@ The application can identify weak topics.
 
 ---
 
+## Tasks
+
+- [x] Migration for quiz_sessions + quiz_attempts tables (session/question/selected/correct/is_correct/time_taken + topic/subject)
+- [x] Service to record attempts and compute session metrics (score, accuracy, attempted, correct, incorrect, average time)
+- [x] Per-topic accuracy + weak topics identification
+- [x] HTTP endpoints (POST sessions, POST single/bulk attempts, GET session with metrics + topic breakdown)
+- [x] Wire evaluation service in router and cmd/api/main.go
+- [x] Frontend lib/api.ts helpers + types
+- [x] Evaluation UI showing score/accuracy/attempted/correct/incorrect/avg time + per-topic accuracy + weak topics highlight
+- [x] Persist results on quiz completion, fetch/display metrics in QuizResults
+- [x] Tests for metrics + weak-topic logic and handler validation
+- [x] go vet, go test, npm run build pass
+
+---
+
+Completed: 2026-09-21
+
+Verified: migration `007_add_quiz_evaluation.sql` creates `quiz_sessions` + `quiz_attempts` storing session/question/selected_answer/correct_answer/is_correct/time_taken_seconds plus topic/subject for weak-topic analysis; `internal/quiz/evaluation.go` provides `QuizSession`/`QuizAttempt` with validation (`IsCorrect` derived), `ComputeSessionMetrics` (score, accuracy, attempted, correct, incorrect, average time), `ComputeTopicBreakdown` (per-topic accuracy, e.g. Deadlock 82%) and `WeakTopics` (<70% threshold) via `NewSessionResult`; `internal/quiz/evaluation_store.go` provides `EvaluationService` (`CreateSession`, `SubmitAttempt`, `SubmitAttempts`, `GetResult`) backed by `EvaluationStore` postgres repository; HTTP `POST /api/v1/quiz/sessions`, `POST /api/v1/quiz/sessions/{id}/attempts`, `POST /api/v1/quiz/sessions/{id}/attempts/bulk`, `GET /api/v1/quiz/sessions/{id}` (metrics + topics + weak_topics) via `internal/http/quiz_evaluation.go`, wired in `internal/http/router.go` and `cmd/api/main.go`; frontend `lib/api.ts` adds `QuizSession`/`QuizAttempt`/`QuizMetrics`/`TopicMetric`/`QuizSessionDetail` types and `createQuizSession`/`submitQuizAttempt`/`submitQuizAttempts`/`getQuizSession` helpers; `pages/quiz/index.tsx` persists results on completion (create session + bulk submit, fetches detail) and `components/quiz/QuizResults.tsx` displays score/accuracy/attempted/correct/incorrect/avg time with per-topic accuracy and weak-topics highlight (`getWeakTopics`, `WEAK_TOPIC_THRESHOLD`); tests `internal/quiz/evaluation_test.go` + `evaluation_extra_test.go` and `internal/http/quiz_evaluation_test.go` + `quiz_evaluation_extra_test.go` cover metrics, topic breakdown, weak topics, service validation and handler/router validation; `go vet`, `go test ./internal/quiz/... ./internal/http/...` and `npm run build` pass.
+
+---
+
 # 21. Phase 16 — Source Question Traceability
 
 ## Goal

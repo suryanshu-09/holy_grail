@@ -565,6 +565,154 @@ export async function generateQuizGet(filters?: QuizFilters): Promise<QuizRespon
   return (await res.json()) as QuizResponse;
 }
 
+export interface CreateQuizSessionRequest {
+  mode?: QuizMode;
+  num_questions?: number;
+  subject?: string;
+  topic?: string;
+  topics?: string[];
+}
+
+export interface QuizSession {
+  id: string;
+  mode?: string | null;
+  subject?: string | null;
+  total_questions: number;
+  created_at?: string | null;
+}
+
+export interface QuizAttemptInput {
+  question_id: string;
+  source_question_id?: string | null;
+  question_text?: string | null;
+  selected_answer: number | null;
+  correct_answer: number;
+  topic?: string | null;
+  subject?: string | null;
+  time_taken_seconds: number;
+}
+
+export interface QuizAttempt extends QuizAttemptInput {
+  id: string;
+  session_id: string;
+  is_correct: boolean;
+}
+
+export interface QuizMetrics {
+  score: number;
+  accuracy: number;
+  questions_attempted: number;
+  questions_correct: number;
+  questions_incorrect: number;
+  average_time_seconds: number;
+  total_questions: number;
+}
+
+export interface TopicMetric {
+  topic: string;
+  subject?: string | null;
+  attempted: number;
+  correct: number;
+  incorrect: number;
+  accuracy: number;
+}
+
+export interface QuizSessionDetail {
+  session: QuizSession;
+  attempts: QuizAttempt[];
+  metrics: QuizMetrics;
+  topics: TopicMetric[];
+  weak_topics: string[];
+}
+
+export interface SubmitQuizAttemptsRequest {
+  attempts: QuizAttemptInput[];
+}
+
+function parseQuizSessionError(action: string, status: number, statusText: string, body: string): Error {
+  try {
+    const parsed = JSON.parse(body) as ApiErrorBody;
+    if (parsed.error?.message) {
+      return new Error(parsed.error.message);
+    }
+  } catch {
+    // Fall through to generic message below.
+  }
+  return new Error(`${action} failed: ${status} ${statusText || 'Unknown error'}`);
+}
+
+async function postJson<T>(url: string, body: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body ?? {}),
+  });
+  if (!res.ok) {
+    throw parseQuizSessionError('Quiz session request', res.status, res.statusText, await res.text());
+  }
+  return (await res.json()) as T;
+}
+
+export async function createQuizSession(req?: CreateQuizSessionRequest): Promise<QuizSession> {
+  const body: Record<string, unknown> = {};
+  if (req?.mode !== undefined) body.mode = req.mode;
+  if (req?.num_questions !== undefined) body.num_questions = req.num_questions;
+  if (req?.subject !== undefined) body.subject = req.subject;
+  if (req?.topic !== undefined) body.topic = req.topic;
+  if (req?.topics !== undefined) body.topics = req.topics;
+  return postJson<QuizSession>(`${BASE_URL}/quiz/sessions`, body);
+}
+
+export async function submitQuizAttempt(
+  sessionId: string,
+  attempt: QuizAttemptInput
+): Promise<QuizAttempt> {
+  if (!sessionId || !sessionId.trim()) throw new Error('sessionId is required');
+  if (!attempt || !attempt.question_id || !attempt.question_id.trim()) {
+    throw new Error('attempt.question_id is required');
+  }
+  return postJson<QuizAttempt>(
+    `${BASE_URL}/quiz/sessions/${encodeURIComponent(sessionId)}/attempts`,
+    attempt
+  );
+}
+
+export async function submitQuizAttempts(
+  sessionId: string,
+  attempts: QuizAttemptInput[]
+): Promise<QuizAttempt[]>;
+export async function submitQuizAttempts(
+  sessionId: string,
+  req: SubmitQuizAttemptsRequest
+): Promise<QuizAttempt[]>;
+export async function submitQuizAttempts(
+  sessionId: string,
+  attemptsOrReq: QuizAttemptInput[] | SubmitQuizAttemptsRequest
+): Promise<QuizAttempt[]> {
+  if (!sessionId || !sessionId.trim()) throw new Error('sessionId is required');
+  const attempts = Array.isArray(attemptsOrReq) ? attemptsOrReq : attemptsOrReq?.attempts;
+  if (!attempts || attempts.length === 0) throw new Error('attempts must be a non-empty array');
+  for (const a of attempts) {
+    if (!a || !a.question_id || !a.question_id.trim()) {
+      throw new Error('each attempt requires question_id');
+    }
+  }
+  return postJson<QuizAttempt[]>(
+    `${BASE_URL}/quiz/sessions/${encodeURIComponent(sessionId)}/attempts/bulk`,
+    { attempts }
+  );
+}
+
+export async function getQuizSession(sessionId: string): Promise<QuizSessionDetail> {
+  if (!sessionId || !sessionId.trim()) throw new Error('sessionId is required');
+  const url = `${BASE_URL}/quiz/sessions/${encodeURIComponent(sessionId)}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw parseQuizSessionError('Fetch quiz session', res.status, res.statusText, await res.text());
+  }
+  return (await res.json()) as QuizSessionDetail;
+}
+
 export async function listQuestions(filters?: QuestionFilters): Promise<Question[]> {
   const qs = await request<Question[]>(
     buildUrl('/questions', {

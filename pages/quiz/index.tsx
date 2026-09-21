@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { QuizProgress, QuizQuestionCard, QuizResults, QuizSetupForm, formatQuizTime } from '../../components/quiz'
-import type { QuizResultDetail } from '../../components/quiz'
+import type { QuizResultDetail, QuizTopicMetric } from '../../components/quiz'
 import { Button, EmptyState, ErrorState, LoadingState } from '../../components/ui'
-import { generateQuiz, type QuizFilters, type QuizQuestion } from '../../lib/api'
+import { generateQuiz, createQuizSession, submitQuizAttempts, getQuizSession, type QuizFilters, type QuizQuestion, type QuizAttemptInput, type QuizSessionDetail } from '../../lib/api'
 
 type RunnerPhase = 'setup' | 'runner' | 'results'
 
@@ -24,10 +24,24 @@ export default function QuizPage() {
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const questionStartRef = useRef<number[]>([])
 
+  // Persistence: server-side quiz session + metrics fetched after completion.
+  const [persistStatus, setPersistStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle')
+  const [persistError, setPersistError] = useState<string | null>(null)
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [serverDetail, setServerDetail] = useState<QuizSessionDetail | null>(null)
+  const [runId, setRunId] = useState(0)
+  const persistedRunRef = useRef<number>(-1)
+
   const startQuiz = useCallback(async (nextFilters: QuizFilters) => {
     setLoading(true)
     setError(null)
     setFilters(nextFilters)
+    // Reset persistence for the new run.
+    setPersistStatus('idle')
+    setPersistError(null)
+    setSessionId(null)
+    setServerDetail(null)
+    setRunId((r) => r + 1)
     try {
       const res = await generateQuiz(nextFilters)
       const qs = res.questions ?? []
@@ -123,6 +137,75 @@ export default function QuizPage() {
     setError(null)
   }, [])
 
+  // Topic attribution shared by the attempt payload and the local fallback
+  // metrics: quiz items carry no topic, so attribute via the active filters.
+  const resolveTopicNames = useCallback((): string[] => {
+    const filterTopics = (filters?.topics ?? []).map((t) => t.trim()).filter(Boolean)
+    if (filters?.topic?.trim()) filterTopics.unshift(filters.topic.trim())
+    const deduped = Array.from(new Set(filterTopics))
+    return deduped.length > 0 ? deduped : [filters?.subject?.trim() || 'General']
+  }, [filters])
+
+  // Persist completed quiz: create session, bulk-submit answered attempts,
+  // then fetch server-computed metrics + per-topic breakdown + weak topics.
+  // Server metrics take precedence; local computation remains as fallback.
+  const persistResults = useCallback(async () => {
+    if (questions.length === 0) return
+    setPersistStatus('saving')
+    setPersistError(null)
+    try {
+      const topicNames = resolveTopicNames()
+      const totalSeconds =
+        quizStart !== null && quizEnd !== null
+          ? Math.max(0, Math.floor((quizEnd - quizStart) / 1000))
+          : elapsedSeconds
+      const perQuestionTime = questions.length > 0 ? totalSeconds / questions.length : 0
+      const subject = filters?.subject?.trim() || undefined
+
+      const session = await createQuizSession({
+        mode: filters?.mode,
+        num_questions: questions.length,
+        subject,
+        topic: filters?.topic?.trim() || undefined,
+        topics: (filters?.topics ?? []).map((t) => t.trim()).filter(Boolean) || undefined,
+      })
+      setSessionId(session.id)
+
+      const attempts: QuizAttemptInput[] = []
+      questions.forEach((q, i) => {
+        const selected = selections[i]
+        if (selected === null || selected === undefined) return
+        attempts.push({
+          question_id: q.id || q.source_question_id || `question-${i}`,
+          source_question_id: q.source_question_id || undefined,
+          question_text: q.question || undefined,
+          selected_answer: selected,
+          correct_answer: q.correct_answer,
+          topic: topicNames[i % topicNames.length] || undefined,
+          subject: subject ?? undefined,
+          time_taken_seconds: Math.max(perQuestionTime, 0),
+        })
+      })
+      if (attempts.length > 0) {
+        await submitQuizAttempts(session.id, attempts)
+      }
+      const detail = await getQuizSession(session.id)
+      setServerDetail(detail)
+      setPersistStatus('saved')
+    } catch (err) {
+      setPersistError(err instanceof Error ? err.message : 'Failed to save quiz results.')
+      setPersistStatus('error')
+    }
+  }, [questions, selections, filters, quizStart, quizEnd, elapsedSeconds, resolveTopicNames])
+
+  // Fire persistence once per completed run.
+  useEffect(() => {
+    if (phase !== 'results') return
+    if (persistedRunRef.current === runId) return
+    persistedRunRef.current = runId
+    void persistResults()
+  }, [phase, runId, persistResults])
+
   // ---- Setup screen ----
   if (phase === 'setup' && !loading) {
     return (
@@ -174,11 +257,12 @@ export default function QuizPage() {
       (q, i) => submitted[i] && selections[i] !== null && selections[i] === q.correct_answer
     ).length
     const attemptedCount = selections.filter((s) => s !== null).length
-    const accuracy = totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0
+    const incorrectCount = Math.max(attemptedCount - correctCount, 0)
     const totalSeconds =
       quizStart !== null && quizEnd !== null
         ? Math.max(0, Math.floor((quizEnd - quizStart) / 1000))
         : elapsedSeconds
+    const averageTimeSeconds = totalQuestions > 0 ? totalSeconds / totalQuestions : 0
     const details: QuizResultDetail[] = questions.map((q, i) => ({
       question: q.question,
       correct: submitted[i] && selections[i] !== null && selections[i] === q.correct_answer,
@@ -186,29 +270,90 @@ export default function QuizPage() {
       correctAnswer: q.correct_answer,
     }))
 
+    // Per-topic accuracy: quiz items carry no topic, so attribute via the
+    // active filters. Multiple topics are distributed round-robin so each
+    // topic gets a deterministic share; single topic/subject collapses to one row.
+    // Local fallback — replaced by server metrics once persistence succeeds.
+    const topicNames = resolveTopicNames()
+    const buckets = new Map<string, { attempted: number; correct: number }>()
+    for (const name of topicNames) buckets.set(name, { attempted: 0, correct: 0 })
+    questions.forEach((q, i) => {
+      const name = topicNames[i % topicNames.length]
+      const b = buckets.get(name)
+      if (!b) return
+      if (selections[i] !== null) {
+        b.attempted += 1
+        if (submitted[i] && selections[i] === q.correct_answer) b.correct += 1
+      }
+    })
+    const topicMetrics: QuizTopicMetric[] = Array.from(buckets.entries()).map(([topic, b]) => ({
+      topic,
+      attempted: b.attempted,
+      correct: b.correct,
+      incorrect: Math.max(b.attempted - b.correct, 0),
+      accuracy: b.attempted > 0 ? (b.correct / b.attempted) * 100 : 0,
+    }))
+    const weakTopics = topicMetrics
+      .filter((t) => t.attempted > 0 && t.accuracy < 70)
+      .sort((a, b) => a.accuracy - b.accuracy)
+      .map((t) => t.topic)
+
+    // Prefer server-computed metrics once persisted; fall back to local.
+    const serverMetrics = serverDetail?.metrics
+    const displayCorrect = serverMetrics ? serverMetrics.questions_correct : correctCount
+    const displayAttempted = serverMetrics ? serverMetrics.questions_attempted : attemptedCount
+    const displayIncorrect = serverMetrics ? serverMetrics.questions_incorrect : incorrectCount
+    const displayAvgTime =
+      serverMetrics && persistStatus === 'saved'
+        ? serverMetrics.average_time_seconds
+        : averageTimeSeconds
+    const displayTopics: QuizTopicMetric[] = serverDetail
+      ? serverDetail.topics.map((t) => ({
+          topic: t.topic,
+          attempted: t.attempted,
+          correct: t.correct,
+          incorrect: t.incorrect,
+          accuracy: t.accuracy,
+        }))
+      : topicMetrics
+    const displayWeakTopics =
+      serverDetail && persistStatus === 'saved' ? serverDetail.weak_topics : weakTopics
+
+    const handleRetryPersist = () => {
+      persistedRunRef.current = -1
+      setPersistStatus('idle')
+      setPersistError(null)
+      persistedRunRef.current = runId
+      void persistResults()
+    }
+
     return (
       <div className="mx-auto max-w-2xl">
+        {persistStatus === 'saving' && (
+          <p role="status" className="mb-3 text-center text-sm text-gray-500">
+            Saving results and computing metrics…
+          </p>
+        )}
         <QuizResults
           totalQuestions={totalQuestions}
-          correctCount={correctCount}
+          correctCount={displayCorrect}
           timeSpentSeconds={totalSeconds}
           onRetry={handleRetry}
           details={details}
+          attemptedCount={displayAttempted}
+          incorrectCount={displayIncorrect}
+          averageTimeSeconds={displayAvgTime}
+          topics={displayTopics}
+          weakTopics={displayWeakTopics}
+          sessionId={sessionId}
+          persistStatus={persistStatus}
+          persistError={persistError}
+          onRetryPersist={handleRetryPersist}
         />
-        <div className="mx-auto mt-4 grid max-w-xl grid-cols-2 gap-3 text-center">
-          <div className="rounded-lg border border-gray-200 bg-white px-3 py-3">
-            <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Attempted</p>
-            <p className="mt-1 text-lg font-bold text-gray-900">
-              {attemptedCount}/{totalQuestions}
-            </p>
-          </div>
-          <div className="rounded-lg border border-gray-200 bg-white px-3 py-3">
-            <p className="text-xs font-semibold uppercase tracking-wide text-gray-400">Accuracy</p>
-            <p className="mt-1 text-lg font-bold text-gray-900">{accuracy}%</p>
-          </div>
-        </div>
         <p className="mt-3 text-center text-sm text-gray-500">
-          Time spent: {formatQuizTime(totalSeconds)} · Questions attempted: {attemptedCount} of {totalQuestions}
+          Time spent: {formatQuizTime(totalSeconds)} · Avg {formatQuizTime(displayAvgTime)}
+          /question · Attempted {displayAttempted} of {totalQuestions} · Correct{' '}
+          {displayCorrect} · Incorrect {displayIncorrect}
         </p>
         <div className="mt-6 flex flex-wrap justify-center gap-3">
           <Button onClick={handleRetry}>Retry quiz</Button>

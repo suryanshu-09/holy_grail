@@ -32,6 +32,7 @@ type RouterDeps struct {
 	Searcher       Searcher
 	HybridSearcher HybridSearcher
 	Quiz           QuizGenerator
+	QuizEval       QuizEvaluator
 }
 
 // NewRouter builds the versioned route table wrapped in middleware.
@@ -59,6 +60,10 @@ func NewRouter(cfg *config.AppConfig, deps RouterDeps) http.Handler {
 	mux.Handle("GET "+APIVersion+"/topics/{id}/questions", handleTopicQuestions(deps.Questions, deps.Topics))
 	mux.Handle(APIVersion+"/search", handleSearch(deps.Searcher, deps.HybridSearcher))
 	mux.Handle(APIVersion+"/quiz/generate", handleQuizGenerate(deps.Quiz))
+	mux.Handle("POST "+APIVersion+"/quiz/sessions", handleCreateQuizSession(deps.QuizEval))
+	mux.Handle("GET "+APIVersion+"/quiz/sessions/{id}", handleGetQuizSession(deps.QuizEval))
+	mux.Handle("POST "+APIVersion+"/quiz/sessions/{id}/attempts", handleSubmitQuizAttempt(deps.QuizEval))
+	mux.Handle("POST "+APIVersion+"/quiz/sessions/{id}/attempts/bulk", handleSubmitQuizAttemptsBulk(deps.QuizEval))
 
 	handler := httpx.Recover(mux)
 	handler = httpx.RequestLogging(handler)

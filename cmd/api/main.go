@@ -173,6 +173,11 @@ func main() {
 		logger.Info("quiz LLM disabled (no OPENAI_API_KEY): deterministic Original-PYQ fallback")
 	}
 
+	// Wire quiz evaluation (Phase 15): record attempts and compute session
+	// metrics (score, accuracy, attempted, correct, incorrect, average time)
+	// plus per-topic accuracy and weak topics.
+	quizEvalSvc := quiz.NewEvaluationService(quiz.NewEvaluationRepository(db))
+
 	deps := apihttp.RouterDeps{
 		DB:             db,
 		Documents:      documents.NewService(documentRepo, store),
@@ -184,6 +189,7 @@ func main() {
 		Searcher:       searcher,
 		HybridSearcher: hybridSearcher,
 		Quiz:           quizGenerator,
+		QuizEval:       quizEvalSvc,
 	}
 
 	server := &http.Server{
