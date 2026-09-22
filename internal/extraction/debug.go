@@ -75,6 +75,19 @@ func (w *DebugWriter) Write(e DocumentExtraction) error {
 	if err := os.WriteFile(filepath.Join(dir, "summary.json"), data, 0o644); err != nil {
 		return fmt.Errorf("extraction: write debug summary: %w", err)
 	}
+	// Persist the image manifest (including description/figure_type/
+	// described_by when present) alongside the page dumps so debug output
+	// mirrors pages.json/images.json.
+	var allImages []ImageRef
+	for _, pg := range e.Pages {
+		allImages = append(allImages, pg.Images...)
+	}
+	if allImages == nil {
+		allImages = []ImageRef{}
+	}
+	if imgData, err := json.MarshalIndent(allImages, "", "  "); err == nil {
+		_ = os.WriteFile(filepath.Join(dir, "images.json"), append(imgData, '\n'), 0o644)
+	}
 	return nil
 }
 

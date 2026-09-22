@@ -1,6 +1,12 @@
 package extraction
 
 // ImageRef references an image embedded on a PDF page.
+//
+// Description holds an optional vision-model generated caption of the visual
+// content (empty when the image has not been described yet). FigureType is
+// an optional normalized classification of the figure (diagram, graph,
+// math_figure, table, chart, photo, unknown; empty means unclassified).
+// DescribedBy records which model produced the description (empty when none).
 type ImageRef struct {
 	Name          string  `json:"name"`
 	Page          int     `json:"page,omitempty"`
@@ -11,6 +17,9 @@ type ImageRef struct {
 	StoragePath   string  `json:"storage_path,omitempty"`
 	ThumbnailPath string  `json:"thumbnail_path,omitempty"`
 	Format        string  `json:"format,omitempty"`
+	Description   string  `json:"description,omitempty"`
+	FigureType    string  `json:"figure_type,omitempty"`
+	DescribedBy   string  `json:"described_by,omitempty"`
 }
 
 // Page is the extracted representation of a single PDF page. Error is

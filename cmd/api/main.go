@@ -27,6 +27,41 @@ import (
 
 const shutdownTimeout = 10 * time.Second
 
+// openAIVisionAdapter bridges llm.VisionDescriber (OpenAI chat completions
+// with image_url) to extraction.VisionDescriber so the extraction pipeline
+// can describe images without an import cycle between the two packages.
+// The figure-type string values match, so conversion is a plain field copy.
+type openAIVisionAdapter struct {
+	inner llm.VisionDescriber
+}
+
+// Describe implements extraction.VisionDescriber. It is nil-safe: a nil
+// adapter or nil inner backend reports unknown without an error, mirroring
+// the noop fallback. Backend errors are passed through so the pipeline can
+// log and skip vision non-fatally.
+func (a *openAIVisionAdapter) Describe(ctx context.Context, in extraction.DescribeInput) (extraction.DescribeOutput, error) {
+	if a == nil || a.inner == nil {
+		return extraction.DescribeOutput{FigureType: extraction.FigureTypeUnknown, DescribedBy: "noop"}, nil
+	}
+	out, err := a.inner.Describe(ctx, llm.VisionDescribeInput{
+		Name:    in.Name,
+		Page:    in.Page,
+		Path:    in.Path,
+		Data:    in.Data,
+		Format:  in.Format,
+		Context: in.Context,
+	})
+	res := extraction.DescribeOutput{
+		Description: out.Description,
+		FigureType:  out.FigureType,
+		DescribedBy: out.DescribedBy,
+	}
+	if err != nil {
+		return res, err
+	}
+	return res, nil
+}
+
 func main() {
 	cfg := config.NewAppConfig()
 
@@ -87,6 +122,16 @@ func main() {
 			logger.Info("LLM topic classifier enabled")
 			quizLLM = openai
 			logger.Info("LLM quiz generator enabled")
+		}
+		// Wire vision describer: OpenAI vision when OPENAI_API_KEY is present.
+		// Model resolves from optional OPENAI_VISION_MODEL (default gpt-4o-mini),
+		// so no new required env. Failures are non-fatal: the pipeline runs
+		// without descriptions. Without a key nothing is attached (nil-safe).
+		if vdesc, vErr := llm.NewOpenAIVisionDescriber(key, "", ""); vErr != nil {
+			logger.Warn("vision describer disabled", "error", vErr)
+		} else {
+			extractionSvc = extractionSvc.WithVisionDescriber(&openAIVisionAdapter{inner: vdesc})
+			logger.Info("vision describer enabled", "model", vdesc.Model)
 		}
 		embedder, embedErr := embeddings.NewOpenAIEmbedder(key, cfg.EmbeddingModel, "")
 		if embedErr != nil {

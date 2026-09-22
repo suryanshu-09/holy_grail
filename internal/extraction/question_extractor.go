@@ -16,18 +16,25 @@ import (
 
 // PreviewQuestion is the lightweight extraction representation returned by
 // preview APIs and used internally before persisting into the questions table.
+//
+// Images holds the associated image names (legacy, always populated when a
+// question has visuals). ImageDetails carries the full vision-enriched refs
+// (name + description + figure_type + described_by when available) so quiz
+// generation can preserve visual content. It is empty when the question has
+// no images or when vision produced nothing (deterministic fallback).
 type PreviewQuestion struct {
-	Number          *string  `json:"number,omitempty"`
-	Text            string   `json:"text"`
-	StartPage       int      `json:"start_page"`
-	EndPage         int      `json:"end_page"`
-	StartOffset     *int     `json:"start_offset,omitempty"`
-	EndOffset       *int     `json:"end_offset,omitempty"`
-	Type            string   `json:"type,omitempty"`
-	Options         []string `json:"options,omitempty"`
-	Confidence      float64  `json:"confidence,omitempty"`
-	ExtractionNotes []string `json:"extraction_notes,omitempty"`
-	Images          []string `json:"images,omitempty"`
+	Number          *string    `json:"number,omitempty"`
+	Text            string     `json:"text"`
+	StartPage       int        `json:"start_page"`
+	EndPage         int        `json:"end_page"`
+	StartOffset     *int       `json:"start_offset,omitempty"`
+	EndOffset       *int       `json:"end_offset,omitempty"`
+	Type            string     `json:"type,omitempty"`
+	Options         []string   `json:"options,omitempty"`
+	Confidence      float64    `json:"confidence,omitempty"`
+	ExtractionNotes []string   `json:"extraction_notes,omitempty"`
+	Images          []string   `json:"images,omitempty"`
+	ImageDetails    []ImageRef `json:"image_details,omitempty"`
 }
 
 var (
@@ -390,6 +397,11 @@ func parseQuestionsFromExtraction(de DocumentExtraction) []PreviewQuestion {
 						pq.Confidence = 0.38
 						pq.ExtractionNotes = []string{"deterministic:heuristic-mcq-fallback"}
 					}
+					// Associate this page's images even in heuristic fallback
+					// so visual context is not dropped for unnumbered docs.
+					for _, img := range pg.Images {
+						pq.Images = append(pq.Images, img.Name)
+					}
 					out = append(out, pq)
 				}
 			}
@@ -408,6 +420,9 @@ func parseQuestionsFromExtraction(de DocumentExtraction) []PreviewQuestion {
 						Confidence:      0.25,
 						ExtractionNotes: []string{"deterministic:fallback-single-page"},
 					}
+					for _, img := range pg.Images {
+						pq.Images = append(pq.Images, img.Name)
+					}
 					out = append(out, pq)
 				}
 			}
@@ -420,6 +435,13 @@ func parseQuestionsFromExtraction(de DocumentExtraction) []PreviewQuestion {
 	// Refine image association using Y-coordinate heuristic for pages with
 	// multiple questions. This handles the "nearest question region" rule.
 	out = refineImageAssociation(de, out)
+
+	// Propagate vision descriptions into each question. This fills
+	// ImageDetails from the page image refs and appends deterministic
+	// visual-context notes (has_image / figure types / vision status).
+	// It is nil-safe and never fails: when vision produced nothing the
+	// questions keep legacy Images names plus an explicit fallback note.
+	out = enrichQuestionsWithImageDetails(de, out)
 
 	return out
 }
@@ -622,6 +644,20 @@ func mergeContinuedQuestions(in []PreviewQuestion, de DocumentExtraction) []Prev
 							merged.Images = append(merged.Images, im)
 						}
 					}
+					// Merge image details (vision-enriched refs) by name.
+					merged.ImageDetails = append([]ImageRef{}, cur.ImageDetails...)
+					seenDetail := make(map[string]bool, len(merged.ImageDetails))
+					for _, d := range merged.ImageDetails {
+						seenDetail[d.Name] = true
+					}
+					for _, d := range next.ImageDetails {
+						if !seenDetail[d.Name] {
+							seenDetail[d.Name] = true
+							merged.ImageDetails = append(merged.ImageDetails, d)
+						}
+					}
+					// Merge extraction notes from both sides (keep visual notes).
+					merged.ExtractionNotes = append(merged.ExtractionNotes, next.ExtractionNotes...)
 					out = append(out, merged)
 					i++ // skip next
 					continue
@@ -700,6 +736,16 @@ func refineImageAssociation(de DocumentExtraction, qs []PreviewQuestion) []Previ
 				}
 			}
 			qs[idx].Images = filtered
+			// Keep any pre-existing ImageDetails in sync with the filtered names.
+			if len(qs[idx].ImageDetails) > 0 {
+				kept := make([]ImageRef, 0, len(qs[idx].ImageDetails))
+				for _, d := range qs[idx].ImageDetails {
+					if !imageSet[d.Name] {
+						kept = append(kept, d)
+					}
+				}
+				qs[idx].ImageDetails = kept
+			}
 		}
 		// Reassign each image to the nearest question above it (Y heuristic).
 		// For image Y, the owning question is the one whose start Y is just
@@ -708,6 +754,7 @@ func refineImageAssociation(de DocumentExtraction, qs []PreviewQuestion) []Previ
 		for _, img := range images {
 			if img.Y == 0 && img.X == 0 {
 				qs[indices[0]].Images = append(qs[indices[0]].Images, img.Name)
+				qs[indices[0]].ImageDetails = appendImageDetail(qs[indices[0]].ImageDetails, img)
 				continue
 			}
 			nearest := -1
@@ -749,6 +796,7 @@ func refineImageAssociation(de DocumentExtraction, qs []PreviewQuestion) []Previ
 				}
 			}
 			qs[nearest].Images = append(qs[nearest].Images, img.Name)
+			qs[nearest].ImageDetails = appendImageDetail(qs[nearest].ImageDetails, img)
 			qs[nearest].ExtractionNotes = append(qs[nearest].ExtractionNotes, fmt.Sprintf("image-associated:%s@page%d:y%.0f", img.Name, pageNum, img.Y))
 		}
 	}
@@ -760,6 +808,219 @@ func absFloat(x float64) float64 {
 		return -x
 	}
 	return x
+}
+
+// appendImageDetail appends img to details unless an entry with the same name
+// already exists (in which case the richer entry wins: a described ref
+// replaces an undescribed one). It keeps association deterministic.
+func appendImageDetail(details []ImageRef, img ImageRef) []ImageRef {
+	for i, d := range details {
+		if d.Name == img.Name {
+			if strings.TrimSpace(d.Description) == "" && strings.TrimSpace(img.Description) != "" {
+				details[i] = img
+			}
+			return details
+		}
+	}
+	return append(details, img)
+}
+
+// enrichQuestionsWithImageDetails propagates vision descriptions from the
+// document pages into each preview question. For every associated image name
+// it fills ImageDetails with the full ImageRef (description + figure_type +
+// described_by when the vision pipeline produced them) and appends
+// deterministic visual-context notes:
+//
+//	visual:has_image            — question has at least one image
+//	visual:figure-<type>        — one note per distinct figure type present
+//	visual:described:<name>     — image has a non-empty vision description
+//	visual:undescribed:<name>   — deterministic fallback when vision produced
+//	                              nothing for this image (no key / failure)
+//	vision:described            — at least one image described
+//	vision:unavailable          — images present but none described (fallback)
+//
+// Questions without images are untouched. The function never fails: a nil or
+// image-free extraction is returned unchanged.
+func enrichQuestionsWithImageDetails(de DocumentExtraction, qs []PreviewQuestion) []PreviewQuestion {
+	if len(qs) == 0 {
+		return qs
+	}
+	byName := make(map[string]ImageRef)
+	for _, pg := range de.Pages {
+		for _, img := range pg.Images {
+			if _, ok := byName[img.Name]; !ok {
+				byName[img.Name] = img
+			} else {
+				// Prefer the described copy when duplicates share a name.
+				existing := byName[img.Name]
+				if strings.TrimSpace(existing.Description) == "" && strings.TrimSpace(img.Description) != "" {
+					byName[img.Name] = img
+				}
+			}
+		}
+	}
+	if len(byName) == 0 {
+		return qs
+	}
+	for i := range qs {
+		if len(qs[i].Images) == 0 {
+			continue
+		}
+		// Rebuild details deterministically from the final Images order so
+		// refine/merge reassignment never leaves stale entries behind.
+		details := make([]ImageRef, 0, len(qs[i].Images))
+		for _, name := range qs[i].Images {
+			if ref, ok := byName[name]; ok {
+				details = appendImageDetail(details, ref)
+			} else {
+				details = appendImageDetail(details, ImageRef{Name: name})
+			}
+		}
+		qs[i].ImageDetails = details
+		qs[i].ExtractionNotes = appendVisualNotes(qs[i].ExtractionNotes, details)
+	}
+	return qs
+}
+
+// appendVisualNotes returns notes with deterministic visual-context entries
+// for details appended, skipping notes already present (idempotent).
+func appendVisualNotes(notes []string, details []ImageRef) []string {
+	if len(details) == 0 {
+		return notes
+	}
+	have := make(map[string]bool, len(notes))
+	for _, n := range notes {
+		have[n] = true
+	}
+	add := func(n string) {
+		if !have[n] {
+			have[n] = true
+			notes = append(notes, n)
+		}
+	}
+	add("visual:has_image")
+	// Distinct figure types in sorted order for determinism.
+	types := make(map[string]bool)
+	for _, d := range details {
+		if strings.TrimSpace(d.FigureType) == "" {
+			continue
+		}
+		if ft := NormalizeFigureType(d.FigureType); ft != "" && ft != FigureTypeUnknown {
+			types[ft] = true
+		}
+		// Explicit "unknown" classifications emit no figure note (only the
+		// vision:described/unavailable status notes below).
+	}
+	ordered := make([]string, 0, len(types))
+	for t := range types {
+		ordered = append(ordered, t)
+	}
+	// Simple deterministic sort without importing sort here is unnecessary;
+	// reuse insertion via sorted compare using strings package order.
+	for a := 0; a < len(ordered); a++ {
+		for b := a + 1; b < len(ordered); b++ {
+			if ordered[b] < ordered[a] {
+				ordered[a], ordered[b] = ordered[b], ordered[a]
+			}
+		}
+	}
+	for _, t := range ordered {
+		add("visual:figure-" + t)
+	}
+	described := 0
+	for _, d := range details {
+		if strings.TrimSpace(d.Description) != "" {
+			described++
+			add("visual:described:" + d.Name)
+		} else {
+			add("visual:undescribed:" + d.Name)
+		}
+	}
+	if described > 0 {
+		add("vision:described")
+	} else {
+		// Deterministic fallback: images exist but vision produced nothing.
+		add("vision:unavailable")
+	}
+	return notes
+}
+
+// buildImagesJSONPayload renders the ImagesJSON blob for one preview question.
+// When any associated image carries vision context (description, figure type,
+// or described-by) it returns the vision-enriched object array so quiz
+// generation can preserve visual content; otherwise it returns the legacy
+// string array (deterministic fallback, backwards compatible). It never
+// returns an error; empty input yields "" (caller skips persistence).
+func buildImagesJSONPayload(pq PreviewQuestion) string {
+	if len(pq.Images) == 0 && len(pq.ImageDetails) == 0 {
+		return ""
+	}
+	enriched := false
+	for _, d := range pq.ImageDetails {
+		if strings.TrimSpace(d.Description) != "" || strings.TrimSpace(d.FigureType) != "" || strings.TrimSpace(d.DescribedBy) != "" {
+			enriched = true
+			break
+		}
+	}
+	if enriched {
+		type imageJSON struct {
+			Name          string `json:"name"`
+			StoragePath   string `json:"storage_path,omitempty"`
+			ThumbnailPath string `json:"thumbnail_path,omitempty"`
+			Description   string `json:"description,omitempty"`
+			FigureType    string `json:"figure_type,omitempty"`
+			DescribedBy   string `json:"described_by,omitempty"`
+		}
+		// Preserve the deterministic Images order; fall back to a name-only
+		// entry when a name has no matching detail.
+		byName := make(map[string]ImageRef, len(pq.ImageDetails))
+		for _, d := range pq.ImageDetails {
+			if _, ok := byName[d.Name]; !ok {
+				byName[d.Name] = d
+			}
+		}
+		names := append([]string{}, pq.Images...)
+		if len(names) == 0 {
+			for _, d := range pq.ImageDetails {
+				names = append(names, d.Name)
+			}
+		}
+		items := make([]imageJSON, 0, len(names))
+		for _, n := range names {
+			if d, ok := byName[n]; ok {
+				ft := ""
+				if strings.TrimSpace(d.FigureType) != "" {
+					if norm := NormalizeFigureType(d.FigureType); norm != FigureTypeUnknown {
+						ft = norm
+					} else if strings.TrimSpace(d.FigureType) != "" {
+						// Preserve explicit "unknown" only when the model
+						// actually classified it as such with a description.
+						if strings.TrimSpace(d.Description) != "" {
+							ft = FigureTypeUnknown
+						}
+					}
+				}
+				items = append(items, imageJSON{
+					Name:          d.Name,
+					StoragePath:   d.StoragePath,
+					ThumbnailPath: d.ThumbnailPath,
+					Description:   strings.TrimSpace(d.Description),
+					FigureType:    ft,
+					DescribedBy:   d.DescribedBy,
+				})
+			} else {
+				items = append(items, imageJSON{Name: n})
+			}
+		}
+		if b, err := json.Marshal(items); err == nil {
+			return string(b)
+		}
+	}
+	// Legacy fallback: plain name array.
+	if b, err := json.Marshal(pq.Images); err == nil {
+		return string(b)
+	}
+	return ""
 }
 
 func estimateQuestionY(de DocumentExtraction, pageNum int, q PreviewQuestion) *float64 {
@@ -896,10 +1157,14 @@ func (s *ExtractionService) ExtractQuestions(ctx context.Context, de DocumentExt
 				q.ExtractionNotesJSON = &s
 			}
 		}
-		// images JSON if any
-		if len(pq.Images) > 0 {
-			if b, err := json.Marshal(pq.Images); err == nil {
-				s := string(b)
+		// images JSON if any: vision-enriched object array when descriptions
+		// exist (enough context for image-aware quiz generation), legacy
+		// name array as deterministic fallback. ExtractionNotesJSON already
+		// carries visual-context notes (visual:has_image / visual:figure-* /
+		// vision:described|unavailable) via enrichQuestionsWithImageDetails.
+		if len(pq.Images) > 0 || len(pq.ImageDetails) > 0 {
+			if payload := buildImagesJSONPayload(pq); payload != "" {
+				s := payload
 				q.ImagesJSON = &s
 			}
 		}

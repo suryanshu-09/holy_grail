@@ -164,17 +164,21 @@ Do not implement it until text retrieval works well.
 
 ## Tasks
 
-- [ ] Vision model integration
-- [ ] Image descriptions
-- [ ] Image-aware question extraction
-- [ ] Image-aware quiz generation
-- [ ] Test diagrams
-- [ ] Test graphs
-- [ ] Test mathematical figures
-- [ ] Test tables
-- [ ] Test charts
+- [x] Vision model integration
+- [x] Image descriptions
+- [x] Image-aware question extraction
+- [x] Image-aware quiz generation
+- [x] Test diagrams
+- [x] Test graphs
+- [x] Test mathematical figures
+- [x] Test tables
+- [x] Test charts
 
 ---
+
+Completed: 2026-09-22
+
+Verified: `internal/llm/vision.go` adds OpenAI vision describing (image_url base64, `OPENAI_VISION_MODEL` default gpt-4o-mini, graceful nil-safe fallback) with figure-type classification/normalization (diagram/graph/math_figure/table/chart/photo/unknown); `internal/extraction/vision.go` adds `VisionDescriber` interface; `ImageRef` gains description/figure-type fields persisted in manifests/debug artifacts via best-effort pipeline step; question extraction propagates image descriptions + visual-context notes into `ImagesJSON`/`ExtractionNotesJSON`; quiz `SourceBlock` renders `image_description`/`figure_type` into prompts (all 4 modes) with image-aware deterministic fallback; `cmd/api/main.go` wires describer when `OPENAI_API_KEY` present; unit tests cover vision prompts, figure types, description association, image-aware prompts and extraction→quiz e2e; `go vet ./...` and `go test -count=1 ./...` pass.
 
 # 24. Phase 19 — Background Jobs
 

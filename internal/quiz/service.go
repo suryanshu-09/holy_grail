@@ -414,6 +414,10 @@ func assignQuizIDs(qs []QuizQuestion) {
 // the original wording is the stem, options come from stored options when
 // usable (else fixed placeholders), the correct answer is index 0, and the
 // explanation cites the source. The output always passes ValidateAgainstSources.
+// It is image-aware: when a source carries ImagesJSON with vision
+// descriptions, a compact "[Figure: <name> (<figure_type>): <desc>]" hint is
+// appended to the stem and the explanation notes the figure so visual
+// information is not silently dropped.
 func BuildOriginalQuiz(sources []questions.Question) QuizResponse {
 	out := make([]QuizQuestion, 0, len(sources))
 	seen := make(map[string]struct{}, len(sources))
@@ -426,10 +430,20 @@ func BuildOriginalQuiz(sources []questions.Question) QuizResponse {
 		if text == "" {
 			continue
 		}
+		if q.ImagesJSON != nil {
+			if hint := fallbackFigureHint(*q.ImagesJSON); hint != "" {
+				text = text + " " + hint
+			}
+		}
 		opts := fallbackOptions(q)
 		expl := fmt.Sprintf("Original PYQ %s from document %s (deterministic fallback; LLM unavailable).", q.ID, q.DocumentID)
 		if n := questionNumber(q); n != "" {
 			expl = fmt.Sprintf("Original PYQ %s (question %s) from document %s (deterministic fallback; LLM unavailable).", q.ID, n, q.DocumentID)
+		}
+		if q.ImagesJSON != nil {
+			if fig := fallbackFigureSummary(*q.ImagesJSON); fig != "" {
+				expl = expl + " " + fig
+			}
 		}
 		out = append(out, QuizQuestion{
 			ID:               "quiz-" + q.ID,
@@ -449,6 +463,49 @@ func questionNumber(q questions.Question) string {
 		return ""
 	}
 	return strings.TrimSpace(*q.QuestionNumber)
+}
+
+// fallbackFigureHint renders a compact visual cue for the deterministic
+// fallback stem: "[Figure: <name> (<figure_type>): <description>]". It
+// degrades gracefully: name-only when no description/type is stored, empty
+// when there are no images. parseImagesJSON (prompt.go) handles both the
+// legacy string-array and vision-enriched object-array ImagesJSON formats.
+func fallbackFigureHint(imagesJSON string) string {
+	imgs := parseImagesJSON(imagesJSON)
+	if len(imgs) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(imgs))
+	for _, img := range imgs {
+		label := img.Name
+		if img.FigureType != "" && img.Description != "" {
+			label = fmt.Sprintf("%s (%s): %s", img.Name, img.FigureType, img.Description)
+		} else if img.FigureType != "" {
+			label = fmt.Sprintf("%s (%s)", img.Name, img.FigureType)
+		} else if img.Description != "" {
+			label = fmt.Sprintf("%s: %s", img.Name, img.Description)
+		}
+		parts = append(parts, "[Figure: "+label+"]")
+	}
+	return strings.Join(parts, " ")
+}
+
+// fallbackFigureSummary renders a one-line visual note for the deterministic
+// fallback explanation so reviewers can see which figures were preserved.
+func fallbackFigureSummary(imagesJSON string) string {
+	imgs := parseImagesJSON(imagesJSON)
+	if len(imgs) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(imgs))
+	for _, img := range imgs {
+		n := img.Name
+		if img.FigureType != "" {
+			n = n + " (" + img.FigureType + ")"
+		}
+		names = append(names, n)
+	}
+	return "Visual reference(s): " + strings.Join(names, ", ") + "."
 }
 
 // fallbackOptions returns exactly 4 distinct non-empty options: stored options

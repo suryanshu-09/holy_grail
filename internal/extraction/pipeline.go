@@ -2,6 +2,8 @@ package extraction
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/suryanshu-09/holy_grail/internal/documents"
 	"github.com/suryanshu-09/holy_grail/internal/embeddings"
@@ -40,6 +43,7 @@ type ExtractionService struct {
 	classifier   topics.ClassifierInterface
 	topicRepo    topics.Repository
 	embeddings   *embeddings.Service
+	vision       VisionDescriber
 }
 
 // WithLLMFallback attaches an LLM fallback to the extraction service.
@@ -79,6 +83,18 @@ func (s *ExtractionService) WithTopicClassifier(c topics.ClassifierInterface, r 
 // WithEmbeddingPipeline attaches the optional Phase 10 embedding pipeline.
 func (s *ExtractionService) WithEmbeddingPipeline(pipeline *embeddings.Service) *ExtractionService {
 	s.embeddings = pipeline
+	return s
+}
+
+// WithVisionDescriber attaches the optional vision backend used to describe
+// extracted images after extractImages. It is nil-safe: a nil describer
+// disables vision (same as never calling this method) and never fails the
+// pipeline. It returns the service so callers can chain.
+func (s *ExtractionService) WithVisionDescriber(v VisionDescriber) *ExtractionService {
+	if v == nil {
+		return s
+	}
+	s.vision = v
 	return s
 }
 
@@ -122,6 +138,11 @@ func (s *ExtractionService) Extract(ctx context.Context, documentID, storagePath
 		return DocumentExtraction{}, s.markFailed(ctx, documentID, err)
 	}
 
+	// Vision descriptions are best-effort and non-fatal: describe extracted
+	// images after extractImages so pages.json/images.json manifests carry
+	// description + figure-type context. Failures are logged and skipped.
+	s.describeImages(ctx, documentID, &result)
+
 	if err := s.saveResults(documentID, result); err != nil {
 		return DocumentExtraction{}, s.markFailed(ctx, documentID, err)
 	}
@@ -161,6 +182,181 @@ func (s *ExtractionService) Extract(ctx context.Context, documentID, storagePath
 	return result, nil
 }
 
+// visionCacheFileName holds content-hash -> DescribeOutput entries so
+// re-extraction and duplicate images never re-call the vision backend.
+const visionCacheFileName = "vision_cache.json"
+
+// describeImages fills Description/FigureType/DescribedBy on every image in
+// result using the configured VisionDescriber. It is best-effort and never
+// returns an error: a nil describer is a no-op, per-image failures are logged
+// and skipped, and cache I/O failures are ignored. Results are cached by
+// SHA-256 of the image file bytes (persisted per document) so repeated runs
+// are cheap and deterministic.
+func (s *ExtractionService) describeImages(ctx context.Context, documentID string, result *DocumentExtraction) {
+	if s.vision == nil || result == nil {
+		return
+	}
+	hasImages := false
+	for _, pg := range result.Pages {
+		if len(pg.Images) > 0 {
+			hasImages = true
+			break
+		}
+	}
+	if !hasImages {
+		return
+	}
+
+	cache := s.loadVisionCache(documentID)
+	dirty := false
+
+	// Build page-text context for grounding (truncated per image).
+	pageText := make(map[int]string, len(result.Pages))
+	for _, pg := range result.Pages {
+		pageText[pg.Number] = pg.Text
+	}
+
+	for pi := range result.Pages {
+		for ii := range result.Pages[pi].Images {
+			if err := ctx.Err(); err != nil {
+				slog.Warn("extraction: vision describe stopped (context cancelled, non-fatal)", "document", documentID, "error", err)
+				break
+			}
+			img := &result.Pages[pi].Images[ii]
+			if strings.TrimSpace(img.Description) != "" {
+				continue
+			}
+			absPath := s.imageAbsPath(documentID, *img)
+			hash := hashFileSHA256(absPath)
+			if hash == "" {
+				// Fall back to a stable synthetic key so identical names
+				// still share cache entries within/across runs.
+				hash = "name:" + img.Name
+			}
+			if cached, ok := cache[hash]; ok {
+				img.Description = cached.Description
+				img.FigureType = NormalizeFigureType(cached.FigureType)
+				img.DescribedBy = cached.DescribedBy
+				continue
+			}
+			out, err := s.vision.Describe(ctx, DescribeInput{
+				Name:   img.Name,
+				Page:   img.Page,
+				Path:   absPath,
+				Format: img.Format,
+				// Prefer the image's own page text; fall back to the page
+				// currently being iterated when Page is unset (0).
+				Context: truncateRunes(firstNonEmpty(pageText[img.Page], result.Pages[pi].Text), 500),
+			})
+			if err != nil {
+				slog.Warn("extraction: vision describe failed (non-fatal)", "document", documentID, "image", img.Name, "error", err)
+				continue
+			}
+			out.FigureType = NormalizeFigureType(out.FigureType)
+			img.Description = strings.TrimSpace(out.Description)
+			img.FigureType = out.FigureType
+			img.DescribedBy = out.DescribedBy
+			cache[hash] = out
+			dirty = true
+		}
+	}
+
+	if dirty {
+		s.saveVisionCache(documentID, cache)
+	}
+}
+
+// imageAbsPath resolves an ImageRef to its absolute file path on disk.
+func (s *ExtractionService) imageAbsPath(documentID string, img ImageRef) string {
+	if img.StoragePath != "" {
+		p := filepath.Join(s.root, filepath.FromSlash(img.StoragePath))
+		if withinRoot(s.root, p) {
+			return p
+		}
+	}
+	if img.Name != "" {
+		return filepath.Join(s.root, documentLayout, documentID, imagesDirName, img.Name)
+	}
+	return ""
+}
+
+// loadVisionCache reads the persisted hash->DescribeOutput map for a
+// document. Missing or corrupt cache files yield an empty map (never error).
+func (s *ExtractionService) loadVisionCache(documentID string) map[string]DescribeOutput {
+	cache := make(map[string]DescribeOutput)
+	if !safeSegment(documentID) {
+		return cache
+	}
+	data, err := os.ReadFile(filepath.Join(s.root, documentLayout, documentID, extractionDirName, visionCacheFileName))
+	if err != nil {
+		return cache
+	}
+	_ = json.Unmarshal(data, &cache)
+	if cache == nil {
+		cache = make(map[string]DescribeOutput)
+	}
+	return cache
+}
+
+// saveVisionCache persists the hash->DescribeOutput map. Failures are
+// best-effort and only logged.
+func (s *ExtractionService) saveVisionCache(documentID string, cache map[string]DescribeOutput) {
+	if !safeSegment(documentID) {
+		return
+	}
+	dir := filepath.Join(s.root, documentLayout, documentID, extractionDirName)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		slog.Warn("extraction: create vision cache dir failed (non-fatal)", "document", documentID, "error", err)
+		return
+	}
+	data, err := json.MarshalIndent(cache, "", "  ")
+	if err != nil {
+		return
+	}
+	if err := writeFileAtomic(filepath.Join(dir, visionCacheFileName), append(data, '\n')); err != nil {
+		slog.Warn("extraction: write vision cache failed (non-fatal)", "document", documentID, "error", err)
+	}
+}
+
+// hashFileSHA256 returns the hex SHA-256 of the file at path, or "" when the
+// file cannot be read.
+func hashFileSHA256(path string) string {
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// firstNonEmpty returns the first non-blank string, or "" when all are blank.
+func firstNonEmpty(ss ...string) string {
+	for _, s := range ss {
+		if strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// truncateRunes clips s to at most n runes.
+func truncateRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	count := 0
+	for i := range s {
+		if count == n {
+			return s[:i]
+		}
+		count++
+	}
+	return s
+}
+
 // markFailed records the failure in documents.status and returns the original
 // pipeline error wrapped with any status-update failure joined onto it.
 func (s *ExtractionService) markFailed(ctx context.Context, documentID string, cause error) error {
@@ -194,7 +390,8 @@ func (s *ExtractionService) resolvePDF(documentID, storagePath string) (string, 
 // under <root>/documents/<id>/extraction/. Files are written atomically so a
 // concurrent or crashed run never leaves truncated JSON behind. It also writes
 // an images.json manifest that enumerates extracted images with their page
-// positions and storage paths.
+// positions, storage paths, and optional vision fields (description,
+// figure_type, described_by) carried on ImageRef.
 func (s *ExtractionService) saveResults(documentID string, result DocumentExtraction) error {
 	dir := filepath.Join(s.root, documentLayout, documentID, extractionDirName)
 	debugDir := filepath.Join(dir, debugDirName)
