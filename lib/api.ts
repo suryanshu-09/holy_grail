@@ -181,6 +181,43 @@ export interface HybridResponse {
   debug?: HybridDebugInfo | null;
 }
 
+// Phase 17 retrieval evaluation (GET /api/v1/debug/eval).
+// Mirrors internal/search/evaluation.go + evaluation_runner.go and
+// internal/http/search_eval.go debugEvalResponse payload.
+export type RetrievalStrategy = 'vector' | 'metadata' | 'keyword' | 'hybrid' | 'hybrid+reranker';
+
+export interface EvalRunnerConfig {
+  limit: number;
+  ks: number[];
+}
+
+export interface EvalQueryMetrics {
+  query: string;
+  strategy: RetrievalStrategy;
+  num_relevant: number;
+  num_retrieved: number;
+  num_relevant_retrieved: number;
+  recall: number;
+  precision: number;
+  hits: Record<number, boolean>;
+}
+
+export interface EvalAggregateMetrics {
+  strategy: RetrievalStrategy;
+  num_queries: number;
+  avg_recall: number;
+  avg_precision: number;
+  top_k_accuracy: Record<number, number>;
+}
+
+export interface DebugEvalResponse {
+  config: EvalRunnerConfig;
+  per_query: Record<RetrievalStrategy, EvalQueryMetrics[]>;
+  results: Record<RetrievalStrategy, EvalAggregateMetrics>;
+  best_by_recall: RetrievalStrategy;
+  num_queries: number;
+}
+
 export type QuizMode = 'original' | 'mcq' | 'similar' | 'mixed';
 
 export interface QuizQuestion {
@@ -500,6 +537,10 @@ export async function hybridRetrievePost(query: string, filters?: HybridFilters)
     throw new Error(`Hybrid retrieval failed: ${res.status} ${res.statusText}`);
   }
   return parseHybridQuestions((await res.json()) as HybridResponse);
+}
+
+export async function getDebugEval(): Promise<DebugEvalResponse> {
+  return request<DebugEvalResponse>(buildUrl('/debug/eval', {}));
 }
 
 function parseQuizError(status: number, statusText: string, body: string): Error {

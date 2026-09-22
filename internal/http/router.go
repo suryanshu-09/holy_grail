@@ -31,6 +31,7 @@ type RouterDeps struct {
 	Embedder       EmbeddingPipeline
 	Searcher       Searcher
 	HybridSearcher HybridSearcher
+	EvalRunner     EvalRunner
 	Quiz           QuizGenerator
 	QuizEval       QuizEvaluator
 }
@@ -60,6 +61,7 @@ func NewRouter(cfg *config.AppConfig, deps RouterDeps) http.Handler {
 	}
 	mux.Handle("GET "+APIVersion+"/topics/{id}/questions", handleTopicQuestions(deps.Questions, deps.Topics))
 	mux.Handle(APIVersion+"/search", handleSearch(deps.Searcher, deps.HybridSearcher))
+	mux.Handle(APIVersion+"/debug/eval", handleDebugEval(deps.EvalRunner))
 	mux.Handle(APIVersion+"/quiz/generate", handleQuizGenerate(deps.Quiz))
 	mux.Handle("POST "+APIVersion+"/quiz/sessions", handleCreateQuizSession(deps.QuizEval))
 	mux.Handle("GET "+APIVersion+"/quiz/sessions/{id}", handleGetQuizSession(deps.QuizEval))

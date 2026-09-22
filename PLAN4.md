@@ -77,6 +77,25 @@ You can demonstrate quantitatively that your retrieval improved.
 
 ---
 
+## Tasks
+
+- [x] Create evaluation dataset (60 queries, 12 categories x 5)
+- [x] Manually determine expected relevant questions per query
+- [x] Implement recall / precision / Top-K (3/5/10) metrics
+- [x] Test vector-only retrieval
+- [x] Test metadata-only retrieval
+- [x] Test keyword-only retrieval
+- [x] Test hybrid retrieval
+- [x] Test hybrid + reranker retrieval
+- [x] Compare strategies side-by-side and document results
+- [x] Expose debug evaluation endpoint
+
+---
+
+Completed: 2026-09-22
+
+Verified: `internal/search/evaluation.go` adds pure recall/precision/HitAtK, `EvaluateQuery`, `AggregateMetricsFor`/`CompareStrategies` over strategies vector/metadata/keyword/hybrid/hybrid+reranker with Top-K 3/5/10; `internal/search/evaluation_dataset.go` bundles 60 queries (12 OS categories x 5, keyword + natural-language + paraphrase phrasing) with expected IDs; `internal/search/evaluation_runner.go` adds `StrategyRunner` (vector via `Service.Search`, metadata via topic filter, keyword via FTS repo, hybrid with/without rerank) plus `ComparisonReport`/`BestByRecall`; `internal/http/search_eval.go` exposes `GET /api/v1/debug/eval` (GET/POST, 503 when unconfigured) wired via `EvalRunner` in `internal/http/router.go` and constructed in `cmd/api/main.go` (nil-safe when search pipeline unavailable); `lib/api.ts` adds `RetrievalStrategy`/`DebugEvalResponse` types plus `getDebugEval()`; unit tests cover metrics, dataset, runner and handler; `go vet ./...`, `go test ./...` and `npm run build` pass.
+
 # 23. Phase 18 — Multimodal Improvements
 
 ## Goal

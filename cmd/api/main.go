@@ -117,19 +117,24 @@ func main() {
 	// Hybrid falls back to vector-only when the keyword branch or embedder is unavailable.
 	var searcher apihttp.Searcher
 	var hybridSearcher apihttp.HybridSearcher
+	var vectorSvc *search.Service
+	var hybridSvc *search.HybridService
+	var keywordRepo search.KeywordRepository
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
 		if queryEmbedder, qErr := embeddings.NewOpenAIEmbedder(key, cfg.EmbeddingModel, ""); qErr == nil {
 			repo := search.NewRepository(db, search.DefaultMetric, queryEmbedder.Model())
 			if svc, sErr := search.NewService(repo, queryEmbedder); sErr == nil {
 				searcher = svc
+				vectorSvc = svc
 				logger.Info("vector search enabled", "metric", svc.Metric(), "model", svc.Model())
 			} else {
 				logger.Warn("vector search disabled", "error", sErr)
 			}
-			keywordRepo := search.NewKeywordRepository(db)
+			keywordRepo = search.NewKeywordRepository(db)
 			if hs, hErr := search.NewHybridService(repo, keywordRepo, queryEmbedder); hErr == nil {
 				hs.SetReranker(search.NewExactMatchReranker(0.1))
 				hybridSearcher = hs
+				hybridSvc = hs
 				logger.Info("hybrid search enabled", "metric", hs.Metric(), "model", hs.Model())
 			} else {
 				logger.Warn("hybrid search disabled (vector-only fallback)", "error", hErr)
@@ -139,6 +144,21 @@ func main() {
 		}
 	} else {
 		logger.Info("vector search disabled (no OPENAI_API_KEY)")
+	}
+
+	// Wire Phase 17 retrieval evaluation: the debug endpoint
+	// (GET /api/v1/debug/eval) runs every strategy over the bundled dataset
+	// via this runner. Requires all three backends; nil disables the endpoint.
+	var evalRunner apihttp.EvalRunner
+	if vectorSvc != nil && keywordRepo != nil && hybridSvc != nil {
+		if runner, rErr := search.NewStrategyRunner(vectorSvc, keywordRepo, hybridSvc, search.RunnerConfig{}); rErr == nil {
+			evalRunner = runner
+			logger.Info("retrieval evaluation enabled (debug /api/v1/debug/eval)")
+		} else {
+			logger.Warn("retrieval evaluation disabled", "error", rErr)
+		}
+	} else {
+		logger.Info("retrieval evaluation disabled (search pipeline unavailable)")
 	}
 
 	// Wire quiz generation: fake-safe deterministic Original-PYQ fallback when
@@ -188,6 +208,7 @@ func main() {
 		Embedder:       embeddingPipeline,
 		Searcher:       searcher,
 		HybridSearcher: hybridSearcher,
+		EvalRunner:     evalRunner,
 		Quiz:           quizGenerator,
 		QuizEval:       quizEvalSvc,
 	}
