@@ -16,6 +16,7 @@ import (
 	"github.com/suryanshu-09/holy_grail/internal/documents"
 	"github.com/suryanshu-09/holy_grail/internal/embeddings"
 	"github.com/suryanshu-09/holy_grail/internal/extraction"
+	"github.com/suryanshu-09/holy_grail/internal/jobs"
 	"github.com/suryanshu-09/holy_grail/internal/llm"
 	"github.com/suryanshu-09/holy_grail/internal/logging"
 	"github.com/suryanshu-09/holy_grail/internal/questions"
@@ -243,6 +244,15 @@ func main() {
 	// plus per-topic accuracy and weak topics.
 	quizEvalSvc := quiz.NewEvaluationService(quiz.NewEvaluationRepository(db))
 
+	// Wire Phase 19 background jobs: Postgres-backed store with an
+	// Asynq bridge in persist-only mode (nil client). The handlers stay
+	// nil-safe (503 when store/enqueuer are nil), and persist-only means
+	// the API works with no Redis running; the worker app attaches a real
+	// Asynq client later.
+	jobStore := jobs.NewPostgresStore(db)
+	jobEnqueuer := jobs.NewAsynqEnqueuer(jobStore, nil, jobs.AsynqQueue)
+	logger.Info("job queue enabled (persist-only, no Redis client)")
+
 	deps := apihttp.RouterDeps{
 		DB:             db,
 		Documents:      documents.NewService(documentRepo, store),
@@ -256,6 +266,8 @@ func main() {
 		EvalRunner:     evalRunner,
 		Quiz:           quizGenerator,
 		QuizEval:       quizEvalSvc,
+		Jobs:           jobStore,
+		JobEnqueuer:    jobEnqueuer,
 	}
 
 	server := &http.Server{

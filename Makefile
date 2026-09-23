@@ -3,8 +3,8 @@ SHELL := /bin/bash
 .PHONY: db-up db-down db-migrate db-seed
 
 db-up:
-	@echo "Starting Postgres (pgvector) container..."
-	docker compose up -d db
+	@echo "Starting Postgres (pgvector) + Redis containers..."
+	docker compose up -d db redis
 	@echo "Waiting for Postgres to be ready..."
 	docker compose exec -T db bash -c 'until pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB >/dev/null 2>&1; do sleep 1; done; echo ready'
 

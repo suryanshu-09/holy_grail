@@ -911,3 +911,105 @@ export function uploadDocument(
     xhr.send(form);
   });
 }
+
+// Phase 19 background jobs (POST /documents/{id}/process,
+// GET /jobs/{id}, GET /documents/{id}/processing-status).
+// Mirrors internal/jobs/types.go Job + internal/http/jobs.go
+// processingStatusResponse.
+
+export type JobStatus = 'queued' | 'active' | 'completed' | 'failed' | 'pending' | string;
+
+export type JobType =
+  | 'process_document'
+  | 'extract_questions'
+  | 'classify_questions'
+  | 'generate_embeddings'
+  | string;
+
+export interface ProcessingJob {
+  id: string;
+  type: JobType;
+  document_id?: string | null;
+  status: JobStatus;
+  progress: number;
+  current_step: string;
+  last_error?: string;
+  attempts: number;
+  max_retries: number;
+  timeout_seconds: number;
+  unique_key?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+}
+
+export type ProcessingStepState = 'done' | 'active' | 'pending' | 'failed' | string;
+
+export interface ProcessingStepView {
+  key: string;
+  label: string;
+  state: ProcessingStepState;
+  percent: number;
+}
+
+export interface ProcessingStatus {
+  document_id: string;
+  job_id?: string | null;
+  job_type?: string;
+  status: string;
+  progress: number;
+  current_step: string;
+  steps: ProcessingStepView[];
+  attempts?: number;
+  last_error?: string;
+}
+
+function parseJobError(action: string, status: number, statusText: string, body: string): Error {
+  try {
+    const parsed = JSON.parse(body) as ApiErrorBody;
+    if (parsed.error?.message) {
+      return new Error(parsed.error.message);
+    }
+  } catch {
+    // Fall through to generic message below.
+  }
+  return new Error(`${action} failed: ${status} ${statusText || 'Unknown error'}`);
+}
+
+export async function enqueueProcessDocument(documentId: string): Promise<ProcessingJob> {
+  if (!documentId || !documentId.trim()) {
+    throw new Error('documentId is required');
+  }
+  const res = await fetch(`${BASE_URL}/documents/${encodeURIComponent(documentId)}/process`, {
+    method: 'POST',
+  });
+  // 202 on enqueue, 409 with the existing active job on dedup conflict —
+  // both carry the jobs.Job payload the UI can poll on.
+  if (res.status === 202 || res.status === 409) {
+    return (await res.json()) as ProcessingJob;
+  }
+  throw parseJobError('Enqueue processing job', res.status, res.statusText, await res.text());
+}
+
+export async function getJob(jobId: string): Promise<ProcessingJob> {
+  if (!jobId || !jobId.trim()) {
+    throw new Error('jobId is required');
+  }
+  const res = await fetch(`${BASE_URL}/jobs/${encodeURIComponent(jobId)}`);
+  if (!res.ok) {
+    throw parseJobError('Fetch job', res.status, res.statusText, await res.text());
+  }
+  return (await res.json()) as ProcessingJob;
+}
+
+export async function getProcessingStatus(documentId: string): Promise<ProcessingStatus> {
+  if (!documentId || !documentId.trim()) {
+    throw new Error('documentId is required');
+  }
+  const res = await fetch(`${BASE_URL}/documents/${encodeURIComponent(documentId)}/processing-status`);
+  if (!res.ok) {
+    throw parseJobError('Fetch processing status', res.status, res.statusText, await res.text());
+  }
+  return (await res.json()) as ProcessingStatus;
+}

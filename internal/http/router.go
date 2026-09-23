@@ -8,6 +8,7 @@ import (
 	"github.com/suryanshu-09/holy_grail/internal/documents"
 	"github.com/suryanshu-09/holy_grail/internal/extraction"
 	"github.com/suryanshu-09/holy_grail/internal/httpx"
+	"github.com/suryanshu-09/holy_grail/internal/jobs"
 	"github.com/suryanshu-09/holy_grail/internal/questions"
 	"github.com/suryanshu-09/holy_grail/internal/topics"
 )
@@ -34,6 +35,8 @@ type RouterDeps struct {
 	EvalRunner     EvalRunner
 	Quiz           QuizGenerator
 	QuizEval       QuizEvaluator
+	Jobs           jobs.Store
+	JobEnqueuer    jobs.Enqueuer
 }
 
 // NewRouter builds the versioned route table wrapped in middleware.
@@ -67,6 +70,9 @@ func NewRouter(cfg *config.AppConfig, deps RouterDeps) http.Handler {
 	mux.Handle("GET "+APIVersion+"/quiz/sessions/{id}", handleGetQuizSession(deps.QuizEval))
 	mux.Handle("POST "+APIVersion+"/quiz/sessions/{id}/attempts", handleSubmitQuizAttempt(deps.QuizEval))
 	mux.Handle("POST "+APIVersion+"/quiz/sessions/{id}/attempts/bulk", handleSubmitQuizAttemptsBulk(deps.QuizEval))
+	mux.Handle("POST "+APIVersion+"/documents/{id}/process", handleProcessDocument(deps.Documents, deps.Jobs, deps.JobEnqueuer))
+	mux.Handle("GET "+APIVersion+"/jobs/{id}", handleGetJob(deps.Jobs))
+	mux.Handle("GET "+APIVersion+"/documents/{id}/processing-status", handleProcessingStatus(deps.Documents, deps.Jobs))
 
 	handler := httpx.Recover(mux)
 	handler = httpx.RequestLogging(handler)

@@ -20,6 +20,7 @@ type AppConfig struct {
 	MaxUploadBytes     int64
 	EmbeddingModel     string
 	EmbeddingBatchSize int
+	RedisAddr          string
 }
 
 // NewAppConfig creates AppConfig from environment variables
@@ -53,6 +54,7 @@ func NewAppConfig() AppConfig {
 		MaxUploadBytes:     getInt64Env("MAX_UPLOAD_BYTES", 50*1024*1024),
 		EmbeddingModel:     getEnv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
 		EmbeddingBatchSize: getIntEnv("EMBEDDING_BATCH_SIZE", 64),
+		RedisAddr:          getEnv("REDIS_ADDR", "localhost:6379"),
 	}
 }
 

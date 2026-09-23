@@ -243,16 +243,22 @@ Later split them if necessary.
 
 ## Tasks
 
-- [ ] Add Redis container
-- [ ] Add Asynq
-- [ ] Create worker application
-- [ ] Create processing queue
-- [ ] Move PDF processing to worker
-- [ ] Store job status
-- [ ] Retry failed jobs
-- [ ] Prevent duplicate processing
-- [ ] Add job timeout
-- [ ] Add progress reporting
+- [x] Add Redis container
+- [x] Add Asynq
+- [x] Create worker application
+- [x] Create processing queue
+- [x] Move PDF processing to worker
+- [x] Store job status
+- [x] Retry failed jobs
+- [x] Prevent duplicate processing
+- [x] Add job timeout
+- [x] Add progress reporting
+
+---
+
+Completed: 2026-09-23
+
+Verified: `docker-compose.yml` adds `redis:7-alpine` with healthcheck/persistence and `Makefile db-up` starts `db redis`; `go.mod` adds `hibiken/asynq`; `internal/jobs/types.go` defines 4 job types, queued/active/completed/failed statuses (legacy pending normalized), 6 progress steps with representative percents, and retry/timeout defaults; `migrations/008_add_jobs.sql` creates `jobs` table (status/progress/attempts/max_retries/timeout/unique_key) with indexes and updated_at trigger; `internal/jobs/store.go` adds `PostgresStore` + `MemoryStore` with unique_key dedup, claim with stale-heartbeat timeout reclaim, and progress clamping; `internal/jobs/queue.go` + `asynq.go` add `MemoryEnqueuer` and `AsynqEnqueuer` bridge (deterministic TaskID, nil-client persist-only mode) with task envelope build/parse; `internal/jobs/runner.go` adds `Runner` with per-job timeout context, exponential-backoff retry, progress callbacks, structured logging, `ClaimNext` and Redis-free poll loop plus duplicate-delivery skip; `cmd/worker/main.go` runs Asynq server (4 handlers, concurrency 4) when `REDIS_ADDR` set else DB poll loop, executing the full ExtractionService pipeline (extract → questions → classify → embeddings) with vision/LLM/embeddings wired like the API; `internal/http/jobs.go` exposes `POST /api/v1/documents/{id}/process` (202, 409 dedup conflict), `GET /api/v1/jobs/{id}`, `GET /api/v1/documents/{id}/processing-status` (PLAN-style steps checklist with done/active/pending/failed + percent) wired in `internal/http/router.go` and `cmd/api/main.go` (persist-only enqueuer, nil-safe 503s); `lib/api.ts` adds `ProcessingJob`/`ProcessingStatus` types plus `enqueueProcessDocument`/`getJob`/`getProcessingStatus`; `components/ProcessingStatus.tsx` renders the PLAN checklist with progress bar and polls every 2s on `pages/documents/[id].tsx` until terminal state; unit tests cover store dedup/claim/timeout, runner retry/timeout/progress, task envelopes and HTTP handlers; `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 ---
 

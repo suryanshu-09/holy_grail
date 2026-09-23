@@ -3,7 +3,8 @@ import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { EmptyState, ErrorState, LoadingState } from '../../components/ui'
 import { QuestionCard } from '../../components/QuestionCard'
-import { listDocuments, listQuestions, listTopicsForQuestion, classifyDocument, embedDocument, extractDocument, getBaseUrl, type Document, type Question, type Topic, type DocumentImage } from '../../lib/api'
+import { ProcessingStatus } from '../../components/ProcessingStatus'
+import { listDocuments, listQuestions, listTopicsForQuestion, classifyDocument, embedDocument, extractDocument, enqueueProcessDocument, getProcessingStatus, getBaseUrl, type Document, type Question, type Topic, type DocumentImage, type ProcessingStatus as ProcessingStatusData } from '../../lib/api'
 
 const statusStyles: Record<string, string> = {
   uploaded: 'bg-gray-100 text-gray-700',
@@ -42,6 +43,10 @@ export default function DocumentDetailPage() {
   const [classifyMsg, setClassifyMsg] = useState<string | null>(null)
   const [embedding, setEmbedding] = useState(false)
   const [embeddingMsg, setEmbeddingMsg] = useState<string | null>(null)
+  const [procStatus, setProcStatus] = useState<ProcessingStatusData | null>(null)
+  const [procLoading, setProcLoading] = useState(false)
+  const [processing, setProcessing] = useState(false)
+  const [procMsg, setProcMsg] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     if (typeof id !== 'string') return
@@ -110,6 +115,52 @@ export default function DocumentDetailPage() {
     }
   }, [document, loadQuestions, loadImages])
 
+  const refreshProcessingStatus = useCallback(async () => {
+    if (typeof id !== 'string') return null
+    try {
+      const st = await getProcessingStatus(id)
+      setProcStatus(st)
+      return st
+    } catch {
+      return null
+    }
+  }, [id])
+
+  useEffect(() => {
+    if (!document || typeof id !== 'string') return
+    let cancelled = false
+    setProcLoading(true)
+    refreshProcessingStatus().finally(() => {
+      if (!cancelled) setProcLoading(false)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [document, id, refreshProcessingStatus])
+
+  // Poll the background-job status every 2s while a job is active
+  // (queued/active). Stops on terminal states (completed/failed/idle)
+  // and refreshes document data once processing finishes.
+  useEffect(() => {
+    if (!procStatus || typeof id !== 'string') return
+    const s = (procStatus.status ?? '').toLowerCase()
+    if (s === 'completed' || s === 'failed' || s === 'idle') return
+    const timer = setInterval(async () => {
+      const st = await refreshProcessingStatus()
+      if (!st) return
+      const ns = (st.status ?? '').toLowerCase()
+      if (ns === 'completed') {
+        clearInterval(timer)
+        await load()
+        await loadQuestions()
+        await loadImages()
+      } else if (ns === 'failed' || ns === 'idle') {
+        clearInterval(timer)
+      }
+    }, 2000)
+    return () => clearInterval(timer)
+  }, [procStatus?.status, id, refreshProcessingStatus, load, loadQuestions, loadImages])
+
   const handleExtract = async () => {
     if (typeof id !== 'string') return
     setExtracting(true)
@@ -157,6 +208,26 @@ export default function DocumentDetailPage() {
     }
   }
 
+  const handleProcessBackground = async () => {
+    if (typeof id !== 'string') return
+    setProcessing(true)
+    setProcMsg(null)
+    try {
+      const job = await enqueueProcessDocument(id)
+      setProcMsg(`Processing job ${job.id} (${job.status})`)
+      const st = await refreshProcessingStatus()
+      if (st && (st.status === 'completed' || st.status === 'failed')) {
+        await load()
+        await loadQuestions()
+        await loadImages()
+      }
+    } catch (err) {
+      setProcMsg(err instanceof Error ? err.message : 'Failed to enqueue processing job')
+    } finally {
+      setProcessing(false)
+    }
+  }
+
   if (loading) return <LoadingState label="Loading document..." />
   if (error) return <ErrorState message={error} onRetry={load} />
   if (!document)
@@ -201,6 +272,13 @@ export default function DocumentDetailPage() {
 
         <div className="mt-6 flex gap-3">
           <button
+            onClick={handleProcessBackground}
+            disabled={processing}
+            className="rounded bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+          >
+            {processing ? 'Enqueuing…' : 'Process in background'}
+          </button>
+          <button
             onClick={handleExtract}
             disabled={extracting}
             className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
@@ -234,6 +312,11 @@ export default function DocumentDetailPage() {
         {extractMsg && <p className="mt-3 text-sm text-gray-600">{extractMsg}</p>}
         {classifyMsg && <p className="mt-2 text-sm text-gray-600">{classifyMsg}</p>}
         {embeddingMsg && <p className="mt-2 text-sm text-gray-600">{embeddingMsg}</p>}
+        {procMsg && <p className="mt-2 text-sm text-gray-600">{procMsg}</p>}
+
+        <div className="mt-6 rounded-lg border border-gray-200 bg-gray-50 p-4">
+          <ProcessingStatus status={procStatus} loading={procLoading} />
+        </div>
       </div>
 
       <div className="mt-8">
