@@ -2,18 +2,23 @@ package http
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/suryanshu-09/holy_grail/internal/apperr"
+	"github.com/suryanshu-09/holy_grail/internal/documents"
 	"github.com/suryanshu-09/holy_grail/internal/httpx"
 )
 
 // handleDocumentImages serves extracted images for a document.
 // Route: GET /api/v1/documents/{id}/images/{name}
-func handleDocumentImages(dataDir string) http.HandlerFunc {
+// Ownership is enforced via the documents service when wired
+// (non-nil): another user's documents read as 404.
+func handleDocumentImages(dataDir string, docs *documents.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w, http.MethodGet)
@@ -24,6 +29,17 @@ func handleDocumentImages(dataDir string) http.HandlerFunc {
 		if id == "" || name == "" {
 			httpx.Error(w, http.StatusBadRequest, "missing document id or image name")
 			return
+		}
+		if docs != nil {
+			if _, err := docs.Get(r.Context(), id); err != nil {
+				if errors.Is(err, apperr.ErrNotFound) {
+					httpx.Error(w, http.StatusNotFound, "document not found")
+					return
+				}
+				httpx.LogError("document lookup failed", err)
+				httpx.Error(w, http.StatusInternalServerError, "internal server error")
+				return
+			}
 		}
 		if !isSafeSegment(id) {
 			httpx.Error(w, http.StatusBadRequest, "invalid document id")
@@ -70,7 +86,8 @@ func handleDocumentImages(dataDir string) http.HandlerFunc {
 
 // handleListDocumentImages lists extracted images for a document.
 // Route: GET /api/v1/documents/{id}/images
-func handleListDocumentImages(dataDir string) http.HandlerFunc {
+// Ownership is enforced via the documents service when wired (non-nil).
+func handleListDocumentImages(dataDir string, docs *documents.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			methodNotAllowed(w, http.MethodGet)
@@ -80,6 +97,17 @@ func handleListDocumentImages(dataDir string) http.HandlerFunc {
 		if id == "" {
 			httpx.Error(w, http.StatusBadRequest, "missing document id")
 			return
+		}
+		if docs != nil {
+			if _, err := docs.Get(r.Context(), id); err != nil {
+				if errors.Is(err, apperr.ErrNotFound) {
+					httpx.Error(w, http.StatusNotFound, "document not found")
+					return
+				}
+				httpx.LogError("document lookup failed", err)
+				httpx.Error(w, http.StatusInternalServerError, "internal server error")
+				return
+			}
 		}
 		if !isSafeSegment(id) {
 			httpx.Error(w, http.StatusBadRequest, "invalid document id")

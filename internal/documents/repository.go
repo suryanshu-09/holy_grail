@@ -9,11 +9,14 @@ import (
 	"github.com/suryanshu-09/holy_grail/internal/apperr"
 )
 
-// Filter narrows the documents returned by List.
+// Filter narrows the documents returned by List. UserID scopes to one
+// owner's rows plus legacy unowned rows; empty means anonymous callers
+// see only legacy unowned rows.
 type Filter struct {
 	Subject string
 	Year    *int
 	Status  string
+	UserID  string
 	Limit   int
 	Offset  int
 }
@@ -30,8 +33,89 @@ func NewRepository(db *sql.DB) Repository {
 
 const documentColumns = `id, filename, original_filename, storage_path, subject, year, status, created_at, updated_at`
 
-// List returns documents matching the filter.
+// documentColumnsWithOwner includes the Phase 20 ownership column.
+// Databases that have not applied migration 009 fall back to the legacy
+// column list (see isMissingOwnerColumn).
+const documentColumnsWithOwner = `id, filename, original_filename, storage_path, subject, year, status, user_id, created_at, updated_at`
+
+// isMissingOwnerColumn reports errors caused by the user_id column not
+// existing yet (migration 009 not applied).
+func isMissingOwnerColumn(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "user_id") && strings.Contains(msg, "does not exist")
+}
+
+// List returns documents matching the filter, scoped to the caller's
+// ownership: an authenticated user sees their own rows plus legacy
+// unowned rows; anonymous callers see only legacy unowned rows.
 func (r *repository) List(ctx context.Context, f Filter) ([]Document, error) {
+	docs, err := r.listWithOwner(ctx, f)
+	if err != nil && isMissingOwnerColumn(err) {
+		return r.listLegacy(ctx, f)
+	}
+	return docs, err
+}
+
+func (r *repository) listWithOwner(ctx context.Context, f Filter) ([]Document, error) {
+	query := strings.Builder{}
+	query.WriteString("SELECT " + documentColumnsWithOwner + " FROM documents WHERE 1=1")
+
+	var args []interface{}
+	if f.Subject != "" {
+		args = append(args, f.Subject)
+		query.WriteString(fmt.Sprintf(" AND subject = $%d", len(args)))
+	}
+	if f.Year != nil {
+		args = append(args, *f.Year)
+		query.WriteString(fmt.Sprintf(" AND year = $%d", len(args)))
+	}
+	if f.Status != "" {
+		args = append(args, f.Status)
+		query.WriteString(fmt.Sprintf(" AND status = $%d", len(args)))
+	}
+	if f.UserID != "" {
+		args = append(args, f.UserID)
+		query.WriteString(fmt.Sprintf(" AND (user_id = $%d OR user_id IS NULL)", len(args)))
+	} else {
+		query.WriteString(" AND user_id IS NULL")
+	}
+
+	args = append(args, f.Limit)
+	query.WriteString(fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", len(args), len(args)+1))
+	args = append(args, f.Offset)
+
+	rows, err := r.db.QueryContext(ctx, query.String(), args...)
+	if err != nil {
+		return nil, fmt.Errorf("documents: list: %w", err)
+	}
+	defer rows.Close()
+
+	docs := make([]Document, 0)
+	for rows.Next() {
+		var d Document
+		var owner sql.NullString
+		if err := rows.Scan(&d.ID, &d.Filename, &d.OriginalFilename, &d.StoragePath,
+			&d.Subject, &d.Year, &d.Status, &owner, &d.CreatedAt, &d.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("documents: scan: %w", err)
+		}
+		if owner.Valid {
+			v := owner.String
+			d.UserID = &v
+		}
+		docs = append(docs, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("documents: rows: %w", err)
+	}
+	return docs, nil
+}
+
+// listLegacy is the pre-Phase-20 query used when migration 009 has not
+// been applied yet.
+func (r *repository) listLegacy(ctx context.Context, f Filter) ([]Document, error) {
 	query := strings.Builder{}
 	query.WriteString("SELECT " + documentColumns + " FROM documents WHERE 1=1")
 
@@ -76,12 +160,24 @@ func (r *repository) List(ctx context.Context, f Filter) ([]Document, error) {
 
 // Create inserts a new document row and populates its timestamps.
 func (r *repository) Create(ctx context.Context, d *Document) error {
-	const query = `INSERT INTO documents (id, filename, original_filename, storage_path, subject, year, status)
+	const query = `INSERT INTO documents (id, filename, original_filename, storage_path, subject, year, status, user_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING created_at, updated_at`
+	var owner interface{}
+	if d.UserID != nil && *d.UserID != "" {
+		owner = *d.UserID
+	}
+	err := r.db.QueryRowContext(ctx, query,
+		d.ID, d.Filename, d.OriginalFilename, d.StoragePath, d.Subject, d.Year, d.Status, owner).
+		Scan(&d.CreatedAt, &d.UpdatedAt)
+	if err != nil && isMissingOwnerColumn(err) {
+		const legacy = `INSERT INTO documents (id, filename, original_filename, storage_path, subject, year, status)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
 RETURNING created_at, updated_at`
-	err := r.db.QueryRowContext(ctx, query,
-		d.ID, d.Filename, d.OriginalFilename, d.StoragePath, d.Subject, d.Year, d.Status).
-		Scan(&d.CreatedAt, &d.UpdatedAt)
+		err = r.db.QueryRowContext(ctx, legacy,
+			d.ID, d.Filename, d.OriginalFilename, d.StoragePath, d.Subject, d.Year, d.Status).
+			Scan(&d.CreatedAt, &d.UpdatedAt)
+	}
 	if err != nil {
 		return fmt.Errorf("documents: create: %w", err)
 	}
@@ -104,10 +200,20 @@ func (r *repository) UpdateStatus(ctx context.Context, id string, status string)
 // GetByID returns a single document by ID or apperr.ErrNotFound.
 func (r *repository) GetByID(ctx context.Context, id string) (Document, error) {
 	var d Document
+	var owner sql.NullString
 	err := r.db.QueryRowContext(ctx,
-		"SELECT "+documentColumns+" FROM documents WHERE id = $1", id).
+		"SELECT "+documentColumnsWithOwner+" FROM documents WHERE id = $1", id).
 		Scan(&d.ID, &d.Filename, &d.OriginalFilename, &d.StoragePath,
-			&d.Subject, &d.Year, &d.Status, &d.CreatedAt, &d.UpdatedAt)
+			&d.Subject, &d.Year, &d.Status, &owner, &d.CreatedAt, &d.UpdatedAt)
+	if err != nil && isMissingOwnerColumn(err) {
+		err = r.db.QueryRowContext(ctx,
+			"SELECT "+documentColumns+" FROM documents WHERE id = $1", id).
+			Scan(&d.ID, &d.Filename, &d.OriginalFilename, &d.StoragePath,
+				&d.Subject, &d.Year, &d.Status, &d.CreatedAt, &d.UpdatedAt)
+	} else if err == nil && owner.Valid {
+		v := owner.String
+		d.UserID = &v
+	}
 	if err == sql.ErrNoRows {
 		return Document{}, apperr.ErrNotFound
 	}

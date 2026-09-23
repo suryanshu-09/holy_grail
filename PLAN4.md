@@ -289,27 +289,33 @@ Only implement this after the core system works.
 
 ## Tasks
 
-- [ ] User registration/login
-- [ ] Sessions
-- [ ] User-specific documents
-- [ ] User-specific quizzes
-- [ ] Authorization middleware
-- [ ] Prevent access to another user's documents
-- [ ] User preferences
-- [ ] Quiz history
+- [x] User registration/login
+- [x] Sessions
+- [x] User-specific documents
+- [x] User-specific quizzes
+- [x] Authorization middleware
+- [x] Prevent access to another user's documents
+- [x] User preferences
+- [x] Quiz history
 
 ---
 
 ## Security
 
-- [ ] Password hashing if handling passwords directly
-- [ ] Secure cookies
-- [ ] CSRF considerations
-- [ ] File upload validation
-- [ ] Rate limiting
-- [ ] Request size limits
-- [ ] SQL injection prevention
-- [ ] Path traversal prevention
+- [x] Password hashing if handling passwords directly
+- [x] Secure cookies
+- [x] CSRF considerations
+- [x] File upload validation
+- [x] Rate limiting
+- [x] Request size limits
+- [x] SQL injection prevention
+- [x] Path traversal prevention
+
+---
+
+Completed: 2026-09-23
+
+Verified: `internal/auth` adds registration/login with bcrypt hashing (`password.go`, `golang.org/x/crypto`), opaque bearer sessions persisted as SHA-256 hashes with 30-day TTL and lazy expiry revocation (`service.go`, `tokens.go`, `store.go` with Postgres + memory stores), `OptionalAuth`/`RequireAuth` middleware plus `TokenFromRequest` (Bearer precedence, `hg_session` cookie fallback) and `SetSessionCookie`/`ClearSessionCookie` (HttpOnly, SameSite=Lax, Secure in production) in `context.go`, and `CSRFMiddleware` rejecting cookie-authenticated mutations with mismatched Origin/Referer (`csrf.go`); `migrations/009_add_auth.sql` creates `users` (case-insensitive unique email), `sessions`, `user_preferences` and nullable `user_id` ownership on `documents`/`quiz_sessions`; `internal/documents` scopes `List` to owner+legacy (anonymous sees legacy only), masks cross-owner `Get` as not found and attributes uploads (`service.go`, `repository.go` with pre-009 fallback); `internal/quiz` attributes sessions, masks cross-owner reads/writes as not found and adds `ListSessions` history via optional `SessionLister` (`evaluation_store.go`, repo fallback returns empty history pre-009); `internal/http/auth.go` exposes `POST /api/v1/auth/register` (201, 409 dedup), `POST /api/v1/auth/login` (401 without enumeration), `POST /api/v1/auth/logout` (idempotent), `GET /api/v1/auth/me` and `GET/PATCH /api/v1/users/me/preferences`; `internal/http/quiz_history.go` exposes `GET /api/v1/quiz/sessions` (anonymous gets `[]`); image and job-status handlers enforce document ownership; hardening via per-IP fixed-window rate limiting on auth (10/min, 429+Retry-After), 1 MiB JSON body caps (`internal/httpx/body.go`, `ratelimit.go`), existing PDF magic-byte upload validation, parameterized SQL, and filename/path traversal guards; `lib/api.ts` adds `AuthUser`/`AuthSession`/`UserPreferences` plus `registerUser`/`loginUser`/`logoutUser`/`getCurrentUser`/`getPreferences`/`updatePreferences`/`listQuizHistory` (cookie credentials); unit tests cover auth service, CSRF, rate limiting, handler auth/preferences/ownership/history and quiz ownership; `go vet ./...`, `go test ./...` and `npm run build` pass.
 
 ---
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/suryanshu-09/holy_grail/internal/auth"
 	"github.com/suryanshu-09/holy_grail/internal/config"
 	"github.com/suryanshu-09/holy_grail/internal/documents"
 	"github.com/suryanshu-09/holy_grail/internal/extraction"
@@ -35,6 +36,8 @@ type RouterDeps struct {
 	EvalRunner     EvalRunner
 	Quiz           QuizGenerator
 	QuizEval       QuizEvaluator
+	QuizHistory    QuizHistoryLister
+	Auth           *auth.Service
 	Jobs           jobs.Store
 	JobEnqueuer    jobs.Enqueuer
 }
@@ -49,8 +52,8 @@ func NewRouter(cfg *config.AppConfig, deps RouterDeps) http.Handler {
 	mux.Handle("POST "+APIVersion+"/documents/{id}/extract", handleExtractDocument(deps.Documents, deps.Extraction))
 	mux.Handle("POST "+APIVersion+"/documents/{id}/extract-preview", handleExtractPreview(deps.Documents, deps.Extraction))
 	mux.Handle("POST "+APIVersion+"/documents/{id}/embed", handleEmbedDocument(deps.Documents, deps.Embedder))
-	mux.Handle("GET "+APIVersion+"/documents/{id}/images/{name}", handleDocumentImages(cfg.DataDir))
-	mux.Handle("GET "+APIVersion+"/documents/{id}/images", handleListDocumentImages(cfg.DataDir))
+	mux.Handle("GET "+APIVersion+"/documents/{id}/images/{name}", handleDocumentImages(cfg.DataDir, deps.Documents))
+	mux.Handle("GET "+APIVersion+"/documents/{id}/images", handleListDocumentImages(cfg.DataDir, deps.Documents))
 	mux.Handle(APIVersion+"/questions", handleQuestions(deps.Questions))
 	mux.Handle("GET "+APIVersion+"/questions/{id}", handleQuestionByID(deps.Questions))
 	mux.Handle("GET "+APIVersion+"/questions/{id}/topics", handleGetQuestionTopics(deps.Topics))
@@ -67,14 +70,22 @@ func NewRouter(cfg *config.AppConfig, deps RouterDeps) http.Handler {
 	mux.Handle(APIVersion+"/debug/eval", handleDebugEval(deps.EvalRunner))
 	mux.Handle(APIVersion+"/quiz/generate", handleQuizGenerate(deps.Quiz))
 	mux.Handle("POST "+APIVersion+"/quiz/sessions", handleCreateQuizSession(deps.QuizEval))
+	mux.Handle("GET "+APIVersion+"/quiz/sessions", handleQuizHistory(deps.QuizHistory))
 	mux.Handle("GET "+APIVersion+"/quiz/sessions/{id}", handleGetQuizSession(deps.QuizEval))
 	mux.Handle("POST "+APIVersion+"/quiz/sessions/{id}/attempts", handleSubmitQuizAttempt(deps.QuizEval))
 	mux.Handle("POST "+APIVersion+"/quiz/sessions/{id}/attempts/bulk", handleSubmitQuizAttemptsBulk(deps.QuizEval))
 	mux.Handle("POST "+APIVersion+"/documents/{id}/process", handleProcessDocument(deps.Documents, deps.Jobs, deps.JobEnqueuer))
 	mux.Handle("GET "+APIVersion+"/jobs/{id}", handleGetJob(deps.Jobs))
 	mux.Handle("GET "+APIVersion+"/documents/{id}/processing-status", handleProcessingStatus(deps.Documents, deps.Jobs))
+	mux.Handle("POST "+APIVersion+"/auth/register", handleRegister(deps.Auth, cfg.Env))
+	mux.Handle("POST "+APIVersion+"/auth/login", handleLogin(deps.Auth, cfg.Env))
+	mux.Handle("POST "+APIVersion+"/auth/logout", handleLogout(deps.Auth, cfg.Env))
+	mux.Handle(APIVersion+"/auth/me", handleMe())
+	mux.Handle(APIVersion+"/users/me/preferences", handlePreferences(deps.Auth))
 
-	handler := httpx.Recover(mux)
+	handler := auth.OptionalAuth(deps.Auth)(mux)
+	handler = auth.CSRFMiddleware(cfg.CORSAllowedOrigin)(handler)
+	handler = httpx.Recover(handler)
 	handler = httpx.RequestLogging(handler)
 	return httpx.CORS(cfg.CORSAllowedOrigin)(handler)
 }

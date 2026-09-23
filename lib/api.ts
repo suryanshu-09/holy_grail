@@ -1013,3 +1013,102 @@ export async function getProcessingStatus(documentId: string): Promise<Processin
   }
   return (await res.json()) as ProcessingStatus;
 }
+
+// Phase 20 authentication + user data (POST /auth/register, POST
+// /auth/login, POST /auth/logout, GET /auth/me,
+// GET/PATCH /users/me/preferences, GET /quiz/sessions history).
+// Browser calls send the hg_session cookie (credentials: 'include');
+// non-browser clients can use the returned bearer token instead.
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  display_name?: string | null;
+  created_at?: string | null;
+}
+
+export interface AuthSession {
+  user: AuthUser;
+  token: string;
+}
+
+export interface UserPreferences {
+  user_id: string;
+  default_subject?: string | null;
+  preferred_difficulty?: '' | 'easy' | 'medium' | 'hard' | string;
+  default_quiz_length?: number | null;
+  updated_at?: string | null;
+}
+
+async function authJson<T>(url: string, method: string, body?: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw parseQuizSessionError('Auth request', res.status, res.statusText, await res.text());
+  }
+  return (await res.json()) as T;
+}
+
+export async function registerUser(email: string, password: string, displayName?: string): Promise<AuthSession> {
+  if (!email || !email.trim()) throw new Error('email is required');
+  if (!password) throw new Error('password is required');
+  return authJson<AuthSession>(`${BASE_URL}/auth/register`, 'POST', {
+    email,
+    password,
+    display_name: displayName ?? '',
+  });
+}
+
+export async function loginUser(email: string, password: string): Promise<AuthSession> {
+  if (!email || !email.trim()) throw new Error('email is required');
+  if (!password) throw new Error('password is required');
+  return authJson<AuthSession>(`${BASE_URL}/auth/login`, 'POST', { email, password });
+}
+
+export async function logoutUser(): Promise<{ status: string }> {
+  return authJson<{ status: string }>(`${BASE_URL}/auth/logout`, 'POST', {});
+}
+
+export async function getCurrentUser(): Promise<AuthUser> {
+  const res = await fetch(`${BASE_URL}/auth/me`, { credentials: 'include' });
+  if (!res.ok) {
+    throw parseQuizSessionError('Fetch current user', res.status, res.statusText, await res.text());
+  }
+  return (await res.json()) as AuthUser;
+}
+
+export async function getPreferences(): Promise<UserPreferences> {
+  const res = await fetch(`${BASE_URL}/users/me/preferences`, { credentials: 'include' });
+  if (!res.ok) {
+    throw parseQuizSessionError('Fetch preferences', res.status, res.statusText, await res.text());
+  }
+  return (await res.json()) as UserPreferences;
+}
+
+export async function updatePreferences(prefs: Partial<UserPreferences>): Promise<UserPreferences> {
+  const res = await fetch(`${BASE_URL}/users/me/preferences`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(prefs ?? {}),
+  });
+  if (!res.ok) {
+    throw parseQuizSessionError('Update preferences', res.status, res.statusText, await res.text());
+  }
+  return (await res.json()) as UserPreferences;
+}
+
+export async function listQuizHistory(limit?: number, offset?: number): Promise<QuizSession[]> {
+  const params: Record<string, string | number | undefined> = {};
+  if (limit !== undefined) params.limit = limit;
+  if (offset !== undefined) params.offset = offset;
+  const res = await fetch(buildUrl('/quiz/sessions', params), { credentials: 'include' });
+  if (!res.ok) {
+    throw parseQuizSessionError('Fetch quiz history', res.status, res.statusText, await res.text());
+  }
+  return (await res.json()) as QuizSession[];
+}

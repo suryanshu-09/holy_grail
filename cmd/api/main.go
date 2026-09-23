@@ -11,6 +11,7 @@ import (
 
 	apihttp "github.com/suryanshu-09/holy_grail/internal/http"
 
+	"github.com/suryanshu-09/holy_grail/internal/auth"
 	"github.com/suryanshu-09/holy_grail/internal/config"
 	"github.com/suryanshu-09/holy_grail/internal/database"
 	"github.com/suryanshu-09/holy_grail/internal/documents"
@@ -253,6 +254,13 @@ func main() {
 	jobEnqueuer := jobs.NewAsynqEnqueuer(jobStore, nil, jobs.AsynqQueue)
 	logger.Info("job queue enabled (persist-only, no Redis client)")
 
+	// Wire Phase 20 authentication: users + sessions + preferences.
+	// The handlers stay nil-safe (503 when unconfigured), and the
+	// middleware attaches the user from Bearer/cookie credentials so
+	// documents and quiz sessions are scoped per user.
+	authSvc := auth.NewService(auth.NewPostgresStore(db))
+	logger.Info("auth enabled (register/login/sessions/preferences)")
+
 	deps := apihttp.RouterDeps{
 		DB:             db,
 		Documents:      documents.NewService(documentRepo, store),
@@ -266,6 +274,8 @@ func main() {
 		EvalRunner:     evalRunner,
 		Quiz:           quizGenerator,
 		QuizEval:       quizEvalSvc,
+		QuizHistory:    quizEvalSvc,
+		Auth:           authSvc,
 		Jobs:           jobStore,
 		JobEnqueuer:    jobEnqueuer,
 	}

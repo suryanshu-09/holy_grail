@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/suryanshu-09/holy_grail/internal/apperr"
+	"github.com/suryanshu-09/holy_grail/internal/auth"
 )
 
 // EvaluationStore persists quiz sessions and attempts.
@@ -38,13 +39,25 @@ func (r *evaluationRepository) CreateSession(ctx context.Context, s QuizSession)
 	if err := s.Validate(); err != nil {
 		return QuizSession{}, err
 	}
+	var owner interface{}
+	if s.UserID != "" {
+		owner = s.UserID
+	}
 	var out QuizSession
 	err := r.db.QueryRowContext(ctx,
-		`INSERT INTO quiz_sessions (mode, subject, total_questions, status)
-		 VALUES ($1, $2, $3, $4)
-		 RETURNING id, mode, subject, total_questions, status, created_at, completed_at`,
-		string(s.Mode), s.Subject, s.TotalQuestions, s.Status,
-	).Scan(&out.ID, &out.Mode, &out.Subject, &out.TotalQuestions, &out.Status, &out.CreatedAt, &out.CompletedAt)
+		`INSERT INTO quiz_sessions (mode, subject, total_questions, status, user_id)
+		 VALUES ($1, $2, $3, $4, $5)
+		 RETURNING id, mode, subject, total_questions, status, user_id, created_at, completed_at`,
+		string(s.Mode), s.Subject, s.TotalQuestions, s.Status, owner,
+	).Scan(&out.ID, &out.Mode, &out.Subject, &out.TotalQuestions, &out.Status, &out.UserID, &out.CreatedAt, &out.CompletedAt)
+	if err != nil && isMissingOwnerColumn(err) {
+		err = r.db.QueryRowContext(ctx,
+			`INSERT INTO quiz_sessions (mode, subject, total_questions, status)
+			 VALUES ($1, $2, $3, $4)
+			 RETURNING id, mode, subject, total_questions, status, created_at, completed_at`,
+			string(s.Mode), s.Subject, s.TotalQuestions, s.Status,
+		).Scan(&out.ID, &out.Mode, &out.Subject, &out.TotalQuestions, &out.Status, &out.CreatedAt, &out.CompletedAt)
+	}
 	if err != nil {
 		return QuizSession{}, fmt.Errorf("quiz: create session: %w", err)
 	}
@@ -56,17 +69,83 @@ func (r *evaluationRepository) GetSession(ctx context.Context, id string) (QuizS
 		return QuizSession{}, fmt.Errorf("quiz: session id is required")
 	}
 	var out QuizSession
+	var owner sql.NullString
 	err := r.db.QueryRowContext(ctx,
-		`SELECT id, mode, subject, total_questions, status, created_at, completed_at
+		`SELECT id, mode, subject, total_questions, status, user_id, created_at, completed_at
 		 FROM quiz_sessions WHERE id = $1`, strings.TrimSpace(id),
-	).Scan(&out.ID, &out.Mode, &out.Subject, &out.TotalQuestions, &out.Status, &out.CreatedAt, &out.CompletedAt)
+	).Scan(&out.ID, &out.Mode, &out.Subject, &out.TotalQuestions, &out.Status, &owner, &out.CreatedAt, &out.CompletedAt)
+	if err != nil && isMissingOwnerColumn(err) {
+		owner = sql.NullString{}
+		err = r.db.QueryRowContext(ctx,
+			`SELECT id, mode, subject, total_questions, status, created_at, completed_at
+			 FROM quiz_sessions WHERE id = $1`, strings.TrimSpace(id),
+		).Scan(&out.ID, &out.Mode, &out.Subject, &out.TotalQuestions, &out.Status, &out.CreatedAt, &out.CompletedAt)
+	}
 	if err == sql.ErrNoRows {
 		return QuizSession{}, apperr.ErrNotFound
 	}
 	if err != nil {
 		return QuizSession{}, fmt.Errorf("quiz: get session: %w", err)
 	}
+	if owner.Valid {
+		out.UserID = owner.String
+	}
 	return out, nil
+}
+
+// ListSessionsByUser returns the quiz history of one user, newest first.
+// Databases without migration 009 report an empty history (nil error) so
+// the endpoint stays available before the column exists.
+func (r *evaluationRepository) ListSessionsByUser(ctx context.Context, userID string, limit, offset int) ([]QuizSession, error) {
+	if strings.TrimSpace(userID) == "" {
+		return nil, fmt.Errorf("quiz: user id is required")
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, mode, subject, total_questions, status, user_id, created_at, completed_at
+		 FROM quiz_sessions WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+		strings.TrimSpace(userID), limit, offset)
+	if err != nil {
+		if isMissingOwnerColumn(err) {
+			return []QuizSession{}, nil
+		}
+		return nil, fmt.Errorf("quiz: list sessions: %w", err)
+	}
+	defer rows.Close()
+	out := make([]QuizSession, 0)
+	for rows.Next() {
+		var s QuizSession
+		var owner sql.NullString
+		if err := rows.Scan(&s.ID, &s.Mode, &s.Subject, &s.TotalQuestions, &s.Status, &owner, &s.CreatedAt, &s.CompletedAt); err != nil {
+			return nil, fmt.Errorf("quiz: scan session: %w", err)
+		}
+		if owner.Valid {
+			s.UserID = owner.String
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("quiz: rows sessions: %w", err)
+	}
+	return out, nil
+}
+
+// isMissingOwnerColumn reports errors caused by the quiz_sessions.user_id
+// column not existing yet (migration 009 not applied).
+func isMissingOwnerColumn(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "user_id") && strings.Contains(msg, "does not exist")
 }
 
 func (r *evaluationRepository) RecordAttempt(ctx context.Context, a QuizAttempt) (QuizAttempt, error) {
@@ -135,18 +214,38 @@ func NewEvaluationService(store EvaluationStore) *EvaluationService {
 	return &EvaluationService{Store: store}
 }
 
-// CreateSession opens a new evaluation session.
+// CreateSession opens a new evaluation session, attributing it to the
+// authenticated user when present (anonymous sessions stay unowned).
 func (s *EvaluationService) CreateSession(ctx context.Context, session QuizSession) (QuizSession, error) {
 	if s == nil || s.Store == nil {
 		return QuizSession{}, fmt.Errorf("quiz: evaluation store is required")
 	}
+	if uid := auth.UserIDFromContext(ctx); uid != "" {
+		session.UserID = uid
+	}
 	return s.Store.CreateSession(ctx, session)
+}
+
+// checkSessionAccess masks sessions owned by another user as not found so
+// ownership cannot be probed. Legacy unowned sessions stay visible to all.
+func checkSessionAccess(ctx context.Context, session QuizSession) error {
+	if session.UserID != "" && session.UserID != auth.UserIDFromContext(ctx) {
+		return apperr.ErrNotFound
+	}
+	return nil
 }
 
 // SubmitAttempt records one attempt (is_correct is derived by Validate).
 func (s *EvaluationService) SubmitAttempt(ctx context.Context, attempt QuizAttempt) (QuizAttempt, error) {
 	if s == nil || s.Store == nil {
 		return QuizAttempt{}, fmt.Errorf("quiz: evaluation store is required")
+	}
+	session, err := s.Store.GetSession(ctx, attempt.SessionID)
+	if err != nil {
+		return QuizAttempt{}, err
+	}
+	if err := checkSessionAccess(ctx, session); err != nil {
+		return QuizAttempt{}, err
 	}
 	return s.Store.RecordAttempt(ctx, attempt)
 }
@@ -162,6 +261,13 @@ func (s *EvaluationService) SubmitAttempts(ctx context.Context, sessionID string
 	}
 	if len(attempts) == 0 {
 		return nil, fmt.Errorf("attempts must contain at least 1 item")
+	}
+	session, err := s.Store.GetSession(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkSessionAccess(ctx, session); err != nil {
+		return nil, err
 	}
 	out := make([]QuizAttempt, 0, len(attempts))
 	for i, a := range attempts {
@@ -185,9 +291,36 @@ func (s *EvaluationService) GetResult(ctx context.Context, sessionID string) (Se
 	if err != nil {
 		return SessionResult{}, err
 	}
+	if err := checkSessionAccess(ctx, session); err != nil {
+		return SessionResult{}, err
+	}
 	attempts, err := s.Store.ListAttempts(ctx, session.ID)
 	if err != nil {
 		return SessionResult{}, err
 	}
 	return NewSessionResult(session, attempts), nil
+}
+
+// SessionLister is the optional history capability of an EvaluationStore.
+// *evaluationRepository implements it; other stores may not.
+type SessionLister interface {
+	ListSessionsByUser(ctx context.Context, userID string, limit, offset int) ([]QuizSession, error)
+}
+
+// ListSessions returns the authenticated user's quiz history, newest
+// first. Anonymous callers get an empty history; stores without history
+// support report an error (handlers map it to 503).
+func (s *EvaluationService) ListSessions(ctx context.Context, limit, offset int) ([]QuizSession, error) {
+	if s == nil || s.Store == nil {
+		return nil, fmt.Errorf("quiz: evaluation store is required")
+	}
+	uid := auth.UserIDFromContext(ctx)
+	if uid == "" {
+		return []QuizSession{}, nil
+	}
+	lister, ok := s.Store.(SessionLister)
+	if !ok {
+		return nil, fmt.Errorf("quiz: session history not supported")
+	}
+	return lister.ListSessionsByUser(ctx, uid, limit, offset)
 }

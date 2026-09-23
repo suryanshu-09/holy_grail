@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/suryanshu-09/holy_grail/internal/apperr"
+	"github.com/suryanshu-09/holy_grail/internal/auth"
 )
 
 const (
@@ -63,13 +64,18 @@ func clamp(f *Filter) {
 	}
 }
 
-// List returns documents matching the filter.
+// List returns documents matching the filter, scoped to the caller:
+// authenticated users see their own rows plus legacy unowned rows,
+// anonymous callers see only legacy unowned rows.
 func (s *Service) List(ctx context.Context, f Filter) ([]Document, error) {
 	clamp(&f)
+	f.UserID = auth.UserIDFromContext(ctx)
 	return s.repo.List(ctx, f)
 }
 
-// Get returns a single document or apperr.ErrNotFound.
+// Get returns a single document or apperr.ErrNotFound. Documents owned
+// by another user are reported as not found so ownership cannot be
+// probed (no existence oracle).
 func (s *Service) Get(ctx context.Context, id string) (Document, error) {
 	doc, err := s.repo.GetByID(ctx, id)
 	if err != nil {
@@ -77,6 +83,9 @@ func (s *Service) Get(ctx context.Context, id string) (Document, error) {
 			return Document{}, apperr.ErrNotFound
 		}
 		return Document{}, err
+	}
+	if doc.UserID != nil && *doc.UserID != "" && *doc.UserID != auth.UserIDFromContext(ctx) {
+		return Document{}, apperr.ErrNotFound
 	}
 	return doc, nil
 }
@@ -122,6 +131,11 @@ func (s *Service) Upload(ctx context.Context, originalName string, src io.Reader
 		OriginalFilename: originalName,
 		StoragePath:      &relPath,
 		Status:           statusUploaded,
+	}
+	// Attribute the upload to the authenticated user when present;
+	// anonymous uploads stay unowned (legacy-visible).
+	if uid := auth.UserIDFromContext(ctx); uid != "" {
+		doc.UserID = &uid
 	}
 	if err := s.repo.Create(ctx, &doc); err != nil {
 		// Do not leave orphaned files behind when metadata persistence fails.

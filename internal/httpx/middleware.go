@@ -52,6 +52,8 @@ func Recover(next http.Handler) http.Handler {
 
 // CORS returns a middleware allowing cross-origin requests from the given
 // origin ("*" allows all). Preflight OPTIONS requests are answered directly.
+// When a concrete origin is configured, credentialed requests (session
+// cookie) are allowed via Access-Control-Allow-Credentials.
 func CORS(allowedOrigin string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -62,6 +64,9 @@ func CORS(allowedOrigin string) func(http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			if origin != "*" {
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+			}
 
 			if r.Method == http.MethodOptions {
 				w.WriteHeader(http.StatusNoContent)

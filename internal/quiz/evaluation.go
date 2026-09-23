@@ -19,6 +19,8 @@ const DefaultWeakTopicThreshold = 70.0
 
 // QuizSession is one evaluated quiz run. It groups the attempts submitted
 // for a generated quiz so metrics and per-topic accuracy can be computed.
+// UserID attributes the session to its owner (Phase 20); empty marks a
+// legacy/anonymous session visible to everyone.
 type QuizSession struct {
 	// ID is the server-assigned session ID (UUID string). May be empty pre-insert.
 	ID string `json:"id,omitempty" db:"id"`
@@ -30,6 +32,8 @@ type QuizSession struct {
 	TotalQuestions int `json:"total_questions" db:"total_questions"`
 	// Status is in_progress until the client finishes the quiz.
 	Status string `json:"status" db:"status"`
+	// UserID is the owner's user ID when created authenticated.
+	UserID string `json:"user_id,omitempty" db:"user_id"`
 	// CreatedAt is when the session was opened.
 	CreatedAt time.Time `json:"created_at" db:"created_at"`
 	// CompletedAt is set when the session is finished. Nil while in progress.
