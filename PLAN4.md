@@ -427,15 +427,15 @@ Testing should happen continuously, but this phase consolidates it.
 
 Test:
 
-- [ ] Question parser
-- [ ] Topic normalization
-- [ ] Retrieval
-- [ ] Metadata filters
-- [ ] Quiz generation validation
-- [ ] Document validation
-- [ ] File path handling
-- [ ] Services
-- [ ] Repositories
+- [x] Question parser
+- [x] Topic normalization
+- [x] Retrieval
+- [x] Metadata filters
+- [x] Quiz generation validation
+- [x] Document validation
+- [x] File path handling
+- [x] Services
+- [x] Repositories
 
 ---
 
@@ -451,16 +451,20 @@ service
 PostgreSQL
 ```
 
+Tasks:
+
+- [x] HTTP → service → PostgreSQL integration coverage
+
 ---
 
 ## Database Tests
 
-- [ ] Fresh migrations
-- [ ] Rollbacks
-- [ ] Constraints
-- [ ] Foreign keys
-- [ ] Vector search
-- [ ] Seed data
+- [x] Fresh migrations
+- [x] Rollbacks
+- [x] Constraints
+- [x] Foreign keys
+- [x] Vector search
+- [x] Seed data
 
 ---
 
@@ -468,12 +472,12 @@ PostgreSQL
 
 Test:
 
-- [ ] Upload flow
-- [ ] Document listing
-- [ ] Topic selection
-- [ ] Quiz interaction
-- [ ] Answer submission
-- [ ] Quiz completion
+- [x] Upload flow
+- [x] Document listing
+- [x] Topic selection
+- [x] Quiz interaction
+- [x] Answer submission
+- [x] Quiz completion
 
 ---
 
@@ -504,6 +508,16 @@ See results
 ```
 
 This should eventually be automated.
+
+Tasks:
+
+- [x] Automated E2E Upload → results flow (fake harness + opt-in live test)
+
+---
+
+Completed: 2026-09-24
+
+Verified: Go unit tests added for question validation (`internal/extraction/question_validate_test.go`), quiz validation (`internal/quiz/validate_test.go`), metadata filters (`internal/search/metadata_filters_test.go`), document ID/sanitize/service/repository (`internal/documents/id_test.go`, `sanitize_test.go`, `service_test.go`, `repository_test.go`), question service/repository (`internal/questions/service_test.go`, `repository_test.go`) and local storage paths (`internal/storage/local_test.go`); integration HTTP → service → PostgreSQL covered by `internal/http/integration_test.go`; database tests cover fresh migrations, rollbacks, constraints, foreign keys, vector search and seed data (`internal/database/migrations_test.go`, `rollback_test.go`, `constraints_test.go`, `foreign_keys_test.go`, `vector_search_test.go`, `seed_test.go` plus `dbtest_test.go`/`db_test.go` helpers); frontend Vitest suite covers upload, document listing, topic selection, quiz interaction, answer submission and completion (`__tests__/upload.test.tsx`, `documents.test.tsx`, `topics.test.tsx`, `quiz.test.tsx`, `answer.test.tsx`, `completion.test.tsx` with `vitest.config.mts`/`vitest.setup.ts`); automated E2E Upload → results flow in `internal/e2e/flow_test.go` (fake harness `fakes.go`/`flow.go`/`doc.go`, opt-in live test `live_test.go` + `RUN_LIVE.md`); `go vet ./...`, `go test ./... -count=1` (all packages ok), `npm test -- --run` (6 files, 28 tests passed) and `npm run build` pass.
 
 ---
 
