@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/router'
 import { EmptyState, ErrorState, LoadingState } from '../../components/ui'
@@ -244,6 +244,51 @@ export default function DocumentDetailPage() {
 
   const status = (document.status ?? 'uploaded').toLowerCase()
 
+  // Distinct years across the document + its questions (sorted ascending).
+  const years = useMemo(() => {
+    const set = new Set<number>()
+    if (document?.year != null) set.add(document.year)
+    for (const q of questions) {
+      if (q.year != null) set.add(q.year)
+    }
+    return Array.from(set).sort((a, b) => a - b)
+  }, [document?.year, questions])
+
+  const yearRangeLabel =
+    years.length === 0
+      ? '—'
+      : years.length === 1
+        ? String(years[0])
+        : `${years[0]}–${years[years.length - 1]}`
+
+  // Topics breakdown with per-topic question counts, derived from topicsByQuestion.
+  const topicBreakdown = useMemo(() => {
+    const map = new Map<string, { id: string; name: string; subject?: string | null; count: number }>()
+    for (const list of Object.values(topicsByQuestion)) {
+      for (const t of list ?? []) {
+        const entry = map.get(t.id) ?? { id: t.id, name: t.name, subject: t.subject ?? null, count: 0 }
+        entry.count += 1
+        map.set(t.id, entry)
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+  }, [topicsByQuestion])
+
+  const quizHrefForTopic = (topicName: string) => ({
+    pathname: '/quiz',
+    query: {
+      ...(document?.subject ? { subject: document.subject } : {}),
+      topic: topicName,
+    },
+  })
+
+  const quizHrefForDocument = {
+    pathname: '/quiz',
+    query: {
+      ...(document?.subject ? { subject: document.subject } : {}),
+    },
+  }
+
   return (
     <div>
       <Link href="/documents" className="text-sm text-blue-600 hover:underline">
@@ -316,6 +361,78 @@ export default function DocumentDetailPage() {
 
         <div className="mt-6 rounded-lg border border-gray-200 bg-gray-50 p-4">
           <ProcessingStatus status={procStatus} loading={procLoading} />
+        </div>
+      </div>
+
+      <div className="mt-8 rounded-lg border border-gray-200 bg-white p-6">
+        <div className="flex items-start justify-between gap-4">
+          <h2 className="text-lg font-semibold text-gray-900">Overview</h2>
+          <Link
+            href={quizHrefForDocument}
+            className="shrink-0 rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+          >
+            Start quiz
+          </Link>
+        </div>
+
+        <div className="mt-4">
+          <p className="text-sm font-medium text-gray-500">
+            Years <span className="ml-1 font-normal text-gray-400">({yearRangeLabel})</span>
+          </p>
+          {years.length === 0 ? (
+            <p className="mt-2 text-sm text-gray-400">No year information yet.</p>
+          ) : (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {years.map((y) => (
+                <span
+                  key={y}
+                  className="inline-block rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-medium text-blue-700"
+                >
+                  {y}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="mt-4">
+          <p className="text-sm font-medium text-gray-500">Questions</p>
+          <p className="mt-1 text-sm text-gray-800">
+            {qLoading ? 'Loading…' : `${questions.length} ${questions.length === 1 ? 'question' : 'questions'}`}
+          </p>
+        </div>
+
+        <div className="mt-4">
+          <p className="text-sm font-medium text-gray-500">Topics</p>
+          {topicBreakdown.length === 0 ? (
+            <p className="mt-2 text-sm text-gray-400">
+              No topics classified yet. Run “Classify topics” above.
+            </p>
+          ) : (
+            <ul className="mt-2 divide-y divide-gray-100">
+              {topicBreakdown.map((t) => (
+                <li key={t.id} className="flex items-center justify-between gap-3 py-2 text-sm">
+                  <span className="min-w-0">
+                    <Link
+                      href={`/topics/${t.id}`}
+                      className="font-medium text-blue-600 hover:underline"
+                    >
+                      {t.name}
+                    </Link>
+                    <span className="ml-2 text-gray-500">
+                      {t.count} {t.count === 1 ? 'question' : 'questions'}
+                    </span>
+                  </span>
+                  <Link
+                    href={quizHrefForTopic(t.name)}
+                    className="shrink-0 rounded border border-gray-300 px-2.5 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50"
+                  >
+                    Quiz on this topic
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
       </div>
 

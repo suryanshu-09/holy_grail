@@ -245,6 +245,13 @@ export interface QuizFilters {
   subject?: string;
   query?: string;
   q?: string;
+  question_type?: string;
+  year_min?: number;
+  year_max?: number;
+  only_unseen?: boolean;
+  only_incorrect?: boolean;
+  exclude_source_ids?: string[];
+  only_source_ids?: string[];
 }
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080/api/v1';
@@ -568,6 +575,13 @@ function buildQuizBody(filters?: QuizFilters): Record<string, unknown> {
   if (filters.subject !== undefined) body.subject = filters.subject;
   if (filters.query !== undefined) body.query = filters.query;
   if (filters.q !== undefined) body.q = filters.q;
+  if (filters.question_type !== undefined) body.question_type = filters.question_type;
+  if (filters.year_min !== undefined) body.year_min = filters.year_min;
+  if (filters.year_max !== undefined) body.year_max = filters.year_max;
+  if (filters.only_unseen !== undefined) body.only_unseen = filters.only_unseen;
+  if (filters.only_incorrect !== undefined) body.only_incorrect = filters.only_incorrect;
+  if (filters.exclude_source_ids !== undefined) body.exclude_source_ids = filters.exclude_source_ids;
+  if (filters.only_source_ids !== undefined) body.only_source_ids = filters.only_source_ids;
   return body;
 }
 
@@ -590,6 +604,11 @@ export async function generateQuizGet(filters?: QuizFilters): Promise<QuizRespon
   if (length !== undefined) params.length = length;
   if (filters?.difficulty) params.difficulty = filters.difficulty;
   if (filters?.subject) params.subject = filters.subject;
+  if (filters?.question_type) params.question_type = filters.question_type;
+  if (filters?.year_min !== undefined) params.year_min = filters.year_min;
+  if (filters?.year_max !== undefined) params.year_max = filters.year_max;
+  if (filters?.only_unseen !== undefined) params.only_unseen = filters.only_unseen ? 'true' : 'false';
+  if (filters?.only_incorrect !== undefined) params.only_incorrect = filters.only_incorrect ? 'true' : 'false';
   const query = filters?.query ?? filters?.q;
   if (query) params.query = query;
   const url = new URL(`${BASE_URL}/quiz/generate`);
@@ -599,6 +618,16 @@ export async function generateQuizGet(filters?: QuizFilters): Promise<QuizRespon
     }
   }
   if (filters?.topic) url.searchParams.set('topic', filters.topic);
+  if (filters?.exclude_source_ids) {
+    for (const id of filters.exclude_source_ids) {
+      if (id && id.trim()) url.searchParams.append('exclude_source_ids', id);
+    }
+  }
+  if (filters?.only_source_ids) {
+    for (const id of filters.only_source_ids) {
+      if (id && id.trim()) url.searchParams.append('only_source_ids', id);
+    }
+  }
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined && value !== '') {
       url.searchParams.set(key, String(value));
@@ -623,7 +652,19 @@ export interface QuizSession {
   id: string;
   mode?: string | null;
   subject?: string | null;
+  // Optional topic context for history display. Newer backends may return a
+  // single topic or a topics list alongside the session subject.
+  topic?: string | null;
+  topics?: string[] | null;
   total_questions: number;
+  // Optional pre-computed result summary for history display (score/accuracy).
+  // Absent on older backends; the dashboard falls back to session metadata.
+  score?: number | null;
+  accuracy?: number | null;
+  questions_attempted?: number | null;
+  questions_correct?: number | null;
+  questions_incorrect?: number | null;
+  status?: string | null;
   created_at?: string | null;
 }
 

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/router'
 import { QuizProgress, QuizQuestionCard, QuizResults, QuizSetupForm, formatQuizTime } from '../../components/quiz'
 import type { QuizResultDetail, QuizTopicMetric } from '../../components/quiz'
 import { Button, EmptyState, ErrorState, LoadingState } from '../../components/ui'
@@ -8,8 +9,38 @@ import { generateQuiz, createQuizSession, submitQuizAttempts, getQuizSession, ty
 type RunnerPhase = 'setup' | 'runner' | 'results'
 
 export default function QuizPage() {
+  const router = useRouter()
   const [phase, setPhase] = useState<RunnerPhase>('setup')
   const [filters, setFilters] = useState<QuizFilters | null>(null)
+
+  // Pre-fill topic from ?topic= (linked from the Topic page's Start Quiz).
+  // Supports repeated ?topic= and comma-separated ?topics= values.
+  useEffect(() => {
+    if (!router.isReady) return
+    const collectTopics = (): string[] => {
+      const out: string[] = []
+      const push = (v: unknown) => {
+        if (typeof v === 'string') {
+          for (const part of v.split(',')) {
+            const t = part.trim()
+            if (t) out.push(t)
+          }
+        }
+      }
+      const q = router.query as Record<string, string | string[] | undefined>
+      if (Array.isArray(q.topic)) q.topic.forEach(push)
+      else if (q.topic !== undefined) push(q.topic)
+      if (Array.isArray(q.topics)) q.topics.forEach(push)
+      else if (q.topics !== undefined) push(q.topics)
+      return Array.from(new Set(out))
+    }
+    const names = collectTopics()
+    if (names.length === 0) return
+    setFilters((prev) => {
+      if (prev?.topic || (prev?.topics && prev.topics.length > 0)) return prev
+      return { ...prev, topic: names[0], topics: names }
+    })
+  }, [router.isReady, router.query])
   const [questions, setQuestions] = useState<QuizQuestion[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)

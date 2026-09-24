@@ -224,10 +224,28 @@ func renderConstraints(req QuizRequest) string {
 	if req.Subject != "" {
 		fmt.Fprintf(&b, "- Subject filter: %s. Only use sources from this subject.\n", req.Subject)
 	}
+	if req.NormalizedQuestionType() != "" {
+		fmt.Fprintf(&b, "- Question type filter: %s. Only use sources of this question type.\n", req.NormalizedQuestionType())
+	}
+	if req.YearMin != nil || req.YearMax != nil {
+		fmt.Fprintf(&b, "- Year range filter: %s. Only use sources from these years.\n", formatYearRange(req.YearMin, req.YearMax))
+	}
 	if req.Query != "" {
 		fmt.Fprintf(&b, "- User request: %q. Stay relevant to it.\n", req.Query)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// formatYearRange renders an inclusive year bound for prompt constraints.
+func formatYearRange(min, max *int) string {
+	switch {
+	case min != nil && max != nil:
+		return fmt.Sprintf("%d-%d", *min, *max)
+	case min != nil:
+		return fmt.Sprintf(">= %d", *min)
+	default:
+		return fmt.Sprintf("<= %d", *max)
+	}
 }
 
 // schemaInstruction is the strict output contract shared by all modes.

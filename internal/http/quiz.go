@@ -20,6 +20,8 @@ type QuizGenerator interface {
 // quizGenerateRequest is the JSON body for POST /api/v1/quiz/generate.
 // Length/limit/num_questions are aliases for the quiz length; query/q are
 // aliases for the user request text; topic/topics/subject filter sources.
+// Question type, year range, unseen/incorrect flags and exclude/only source
+// ID lists accept snake_case and camelCase keys (snake wins when both set).
 type quizGenerateRequest struct {
 	Query           string   `json:"query"`
 	Q               string   `json:"q"`
@@ -32,6 +34,20 @@ type quizGenerateRequest struct {
 	Limit           *int     `json:"limit"`
 	NumQuestions    *int     `json:"num_questions"`
 	NumQuestionsAlt *int     `json:"numQuestions"`
+	QuestionType    string   `json:"question_type"`
+	QuestionTypeAlt string   `json:"questionType"`
+	YearMin         *int     `json:"year_min"`
+	YearMinAlt      *int     `json:"yearMin"`
+	YearMax         *int     `json:"year_max"`
+	YearMaxAlt      *int     `json:"yearMax"`
+	OnlyUnseen      *bool    `json:"only_unseen"`
+	OnlyUnseenAlt   *bool    `json:"onlyUnseen"`
+	OnlyIncorrect   *bool    `json:"only_incorrect"`
+	OnlyIncorrectAlt *bool   `json:"onlyIncorrect"`
+	ExcludeSourceIDs    []string `json:"exclude_source_ids"`
+	ExcludeSourceIDsAlt []string `json:"excludeSourceIds"`
+	OnlySourceIDs       []string `json:"only_source_ids"`
+	OnlySourceIDsAlt    []string `json:"onlySourceIds"`
 }
 
 func (r *quizGenerateRequest) effectiveQuery() string {
@@ -69,12 +85,36 @@ func (r *quizGenerateRequest) effectiveLength() *int {
 
 func (r *quizGenerateRequest) toQuizRequest() quiz.QuizRequest {
 	req := quiz.QuizRequest{
-		Mode:       quiz.QuizMode(strings.TrimSpace(r.Mode)),
-		Difficulty: strings.TrimSpace(r.Difficulty),
-		Topics:     r.effectiveTopics(),
-		Subject:    strings.TrimSpace(r.Subject),
-		Query:      r.effectiveQuery(),
+		Mode:         quiz.QuizMode(strings.TrimSpace(r.Mode)),
+		Difficulty:   strings.TrimSpace(r.Difficulty),
+		Topics:       r.effectiveTopics(),
+		Subject:      strings.TrimSpace(r.Subject),
+		Query:        r.effectiveQuery(),
+		QuestionType: strings.TrimSpace(r.QuestionType),
+		YearMin:      r.YearMin,
+		YearMax:      r.YearMax,
 	}
+	if req.QuestionType == "" {
+		req.QuestionType = strings.TrimSpace(r.QuestionTypeAlt)
+	}
+	if req.YearMin == nil {
+		req.YearMin = r.YearMinAlt
+	}
+	if req.YearMax == nil {
+		req.YearMax = r.YearMaxAlt
+	}
+	if r.OnlyUnseen != nil {
+		req.OnlyUnseen = *r.OnlyUnseen
+	} else if r.OnlyUnseenAlt != nil {
+		req.OnlyUnseen = *r.OnlyUnseenAlt
+	}
+	if r.OnlyIncorrect != nil {
+		req.OnlyIncorrect = *r.OnlyIncorrect
+	} else if r.OnlyIncorrectAlt != nil {
+		req.OnlyIncorrect = *r.OnlyIncorrectAlt
+	}
+	req.ExcludeSourceIDs = append(append([]string{}, r.ExcludeSourceIDs...), r.ExcludeSourceIDsAlt...)
+	req.OnlySourceIDs = append(append([]string{}, r.OnlySourceIDs...), r.OnlySourceIDsAlt...)
 	if n := r.effectiveLength(); n != nil {
 		req.NumQuestions = *n
 	}
@@ -98,10 +138,76 @@ func parseQuizLengthParam(q map[string][]string) (*int, error) {
 	return nil, nil
 }
 
+// parseQuizIntAlias parses an optional integer query param with a camelCase
+// alias (first present key wins). Missing keys yield (nil, nil).
+func parseQuizIntAlias(q map[string][]string, snake, camel string) (*int, error) {
+	for _, key := range []string{snake, camel} {
+		vals, ok := q[key]
+		if !ok || len(vals) == 0 || strings.TrimSpace(vals[0]) == "" {
+			continue
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(vals[0]))
+		if err != nil {
+			return nil, err
+		}
+		return &n, nil
+	}
+	return nil, nil
+}
+
+// parseQuizBoolAlias parses an optional boolean query param with a camelCase
+// alias (first present key wins). Accepts strconv.ParseBool values
+// (true/false/1/0/...). Missing keys yield false with no error.
+func parseQuizBoolAlias(q map[string][]string, snake, camel string) (bool, error) {
+	for _, key := range []string{snake, camel} {
+		vals, ok := q[key]
+		if !ok || len(vals) == 0 || strings.TrimSpace(vals[0]) == "" {
+			continue
+		}
+		b, err := strconv.ParseBool(strings.TrimSpace(vals[0]))
+		if err != nil {
+			return false, err
+		}
+		return b, nil
+	}
+	return false, nil
+}
+
+// parseQuizIDsAlias collects repeated and comma-separated ID list params
+// under snake_case and camelCase keys.
+func parseQuizIDsAlias(q map[string][]string, snake, camel string) []string {
+	var out []string
+	for _, key := range []string{snake, camel} {
+		for _, v := range q[key] {
+			for _, part := range strings.Split(v, ",") {
+				if s := strings.TrimSpace(part); s != "" {
+					out = append(out, s)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// firstNonEmpty returns the first non-blank value for keys in order.
+func firstNonEmpty(q map[string][]string, keys ...string) string {
+	for _, key := range keys {
+		if vals, ok := q[key]; ok {
+			for _, v := range vals {
+				if s := strings.TrimSpace(v); s != "" {
+					return s
+				}
+			}
+		}
+	}
+	return ""
+}
 // handleQuizGenerate handles GET and POST for quiz generation.
 // GET  /api/v1/quiz/generate?query=...&topic=...&difficulty=...&mode=mcq&length=5
+//      plus question_type/year_min/year_max/only_unseen/only_incorrect/
+//      exclude_source_ids/only_source_ids (camelCase aliases accepted)
 // POST /api/v1/quiz/generate  { "query": "...", "topic": "...", ... }
-// Invalid mode/length/difficulty map to 400; a nil generator maps to 503.
+// Invalid mode/length/difficulty/filters map to 400; nil generator maps to 503.
 func handleQuizGenerate(gen QuizGenerator) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodPost {
@@ -137,13 +243,16 @@ func handleQuizGenerate(gen QuizGenerator) http.Handler {
 				// q["topic"] already includes the value read via Get; dedupe below.
 				_ = extra
 			}
-			req = quiz.QuizRequest{
-				Mode:       quiz.QuizMode(strings.TrimSpace(q.Get("mode"))),
-				Difficulty: strings.TrimSpace(q.Get("difficulty")),
-				Topics:     topics,
-				Subject:    strings.TrimSpace(q.Get("subject")),
-				Query:      query,
-			}
+		req = quiz.QuizRequest{
+			Mode:             quiz.QuizMode(strings.TrimSpace(q.Get("mode"))),
+			Difficulty:       strings.TrimSpace(q.Get("difficulty")),
+			Topics:           topics,
+			Subject:          strings.TrimSpace(q.Get("subject")),
+			Query:            query,
+			QuestionType:     firstNonEmpty(map[string][]string(q), "question_type", "questionType"),
+			ExcludeSourceIDs: parseQuizIDsAlias(map[string][]string(q), "exclude_source_ids", "excludeSourceIds"),
+			OnlySourceIDs:    parseQuizIDsAlias(map[string][]string(q), "only_source_ids", "onlySourceIds"),
+		}
 			// Dedupe topics preserving order (Get + map iteration may repeat).
 			seen := make(map[string]struct{}, len(req.Topics))
 			deduped := make([]string, 0, len(req.Topics))
@@ -154,14 +263,39 @@ func handleQuizGenerate(gen QuizGenerator) http.Handler {
 				}
 			}
 			req.Topics = deduped
-			n, err := parseQuizLengthParam(map[string][]string(q))
-			if err != nil {
-				httpx.Error(w, http.StatusBadRequest, "length must be an integer")
-				return
-			}
-			if n != nil {
-				req.NumQuestions = *n
-			}
+		n, err := parseQuizLengthParam(map[string][]string(q))
+		if err != nil {
+			httpx.Error(w, http.StatusBadRequest, "length must be an integer")
+			return
+		}
+		if n != nil {
+			req.NumQuestions = *n
+		}
+		qq := map[string][]string(q)
+		yearMin, err := parseQuizIntAlias(qq, "year_min", "yearMin")
+		if err != nil {
+			httpx.Error(w, http.StatusBadRequest, "year_min must be an integer")
+			return
+		}
+		yearMax, err := parseQuizIntAlias(qq, "year_max", "yearMax")
+		if err != nil {
+			httpx.Error(w, http.StatusBadRequest, "year_max must be an integer")
+			return
+		}
+		req.YearMin = yearMin
+		req.YearMax = yearMax
+		unseen, err := parseQuizBoolAlias(qq, "only_unseen", "onlyUnseen")
+		if err != nil {
+			httpx.Error(w, http.StatusBadRequest, "only_unseen must be a boolean")
+			return
+		}
+		incorrect, err := parseQuizBoolAlias(qq, "only_incorrect", "onlyIncorrect")
+		if err != nil {
+			httpx.Error(w, http.StatusBadRequest, "only_incorrect must be a boolean")
+			return
+		}
+		req.OnlyUnseen = unseen
+		req.OnlyIncorrect = incorrect
 		} else {
 			var body quizGenerateRequest
 			dec := json.NewDecoder(r.Body)

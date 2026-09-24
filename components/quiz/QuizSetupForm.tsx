@@ -23,6 +23,8 @@ type Props = {
   className?: string;
 };
 
+export const QUIZ_QUESTION_TYPES = ['', 'mcq', 'descriptive', 'numerical', 'true_false'] as const;
+
 const DEFAULTS: QuizSetupValues = {
   mode: 'mcq',
   num_questions: 10,
@@ -30,6 +32,11 @@ const DEFAULTS: QuizSetupValues = {
   topic: '',
   subject: '',
   query: '',
+  question_type: '',
+  year_min: undefined,
+  year_max: undefined,
+  only_unseen: false,
+  only_incorrect: false,
 };
 
 export function QuizSetupForm({ initial, loading = false, error, onSubmit, className = '' }: Props) {
@@ -43,6 +50,15 @@ export function QuizSetupForm({ initial, loading = false, error, onSubmit, class
   );
   const [subject, setSubject] = useState<string>(initial?.subject ?? '');
   const [query, setQuery] = useState<string>(initial?.query ?? initial?.q ?? '');
+  const [questionType, setQuestionType] = useState<string>(initial?.question_type ?? '');
+  const [yearMin, setYearMin] = useState<string>(
+    initial?.year_min !== undefined ? String(initial.year_min) : ''
+  );
+  const [yearMax, setYearMax] = useState<string>(
+    initial?.year_max !== undefined ? String(initial.year_max) : ''
+  );
+  const [onlyUnseen, setOnlyUnseen] = useState<boolean>(initial?.only_unseen ?? false);
+  const [onlyIncorrect, setOnlyIncorrect] = useState<boolean>(initial?.only_incorrect ?? false);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -59,6 +75,16 @@ export function QuizSetupForm({ initial, loading = false, error, onSubmit, class
     }
     if (subject.trim()) filters.subject = subject.trim();
     if (query.trim()) filters.query = query.trim();
+    if (questionType.trim()) filters.question_type = questionType.trim();
+    const parsedMin = yearMin.trim() ? Number(yearMin) : NaN;
+    if (!Number.isNaN(parsedMin)) filters.year_min = Math.round(parsedMin);
+    const parsedMax = yearMax.trim() ? Number(yearMax) : NaN;
+    if (!Number.isNaN(parsedMax)) filters.year_max = Math.round(parsedMax);
+    if (onlyUnseen) filters.only_unseen = true;
+    if (onlyIncorrect) filters.only_incorrect = true;
+    // Passthrough for pre-filtered source IDs when provided via initial filters.
+    if (initial?.exclude_source_ids?.length) filters.exclude_source_ids = initial.exclude_source_ids;
+    if (initial?.only_source_ids?.length) filters.only_source_ids = initial.only_source_ids;
     onSubmit(filters);
   };
 
@@ -165,6 +191,81 @@ export function QuizSetupForm({ initial, loading = false, error, onSubmit, class
             placeholder="e.g. quadratic equations"
             className={inputCls}
           />
+        </div>
+
+        <div>
+          <label htmlFor="quiz-question-type" className={labelCls}>
+            Question type
+          </label>
+          <select
+            id="quiz-question-type"
+            value={questionType}
+            onChange={(e) => setQuestionType(e.target.value)}
+            className={inputCls}
+          >
+            <option value="">Any type</option>
+            <option value="mcq">MCQ</option>
+            <option value="descriptive">Descriptive</option>
+            <option value="numerical">Numerical</option>
+            <option value="true_false">True/False</option>
+          </select>
+        </div>
+
+        <div>
+          <label htmlFor="quiz-year-min" className={labelCls}>
+            Year min
+          </label>
+          <input
+            id="quiz-year-min"
+            type="number"
+            value={yearMin}
+            onChange={(e) => setYearMin(e.target.value)}
+            placeholder="e.g. 2020"
+            className={inputCls}
+          />
+        </div>
+
+        <div>
+          <label htmlFor="quiz-year-max" className={labelCls}>
+            Year max
+          </label>
+          <input
+            id="quiz-year-max"
+            type="number"
+            value={yearMax}
+            onChange={(e) => setYearMax(e.target.value)}
+            placeholder="e.g. 2024"
+            className={inputCls}
+          />
+        </div>
+
+        <div className="flex items-end gap-6 pb-1">
+          <label htmlFor="quiz-only-unseen" className="flex items-center gap-2 text-sm text-gray-700">
+            <input
+              id="quiz-only-unseen"
+              type="checkbox"
+              checked={onlyUnseen}
+              onChange={(e) => {
+                setOnlyUnseen(e.target.checked);
+                if (e.target.checked) setOnlyIncorrect(false);
+              }}
+              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            Only unseen questions
+          </label>
+          <label htmlFor="quiz-only-incorrect" className="flex items-center gap-2 text-sm text-gray-700">
+            <input
+              id="quiz-only-incorrect"
+              type="checkbox"
+              checked={onlyIncorrect}
+              onChange={(e) => {
+                setOnlyIncorrect(e.target.checked);
+                if (e.target.checked) setOnlyUnseen(false);
+              }}
+              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            Only incorrect questions
+          </label>
         </div>
       </div>
 

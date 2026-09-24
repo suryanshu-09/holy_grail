@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react'
+import Link from 'next/link'
 import { EmptyState, ErrorState, LoadingState } from '../../components/ui'
 import { listTopicsWithCounts, type TopicWithCount } from '../../lib/api'
 
@@ -43,7 +44,9 @@ export default function TopicsPage() {
               key={topic.id}
               className="rounded-lg border border-gray-200 bg-white p-4 transition hover:border-blue-400 hover:shadow-sm"
             >
-              <h3 className="font-medium text-gray-900">{topic.name}</h3>
+              <Link href={`/topics/${topic.id}`} className="block">
+                <h3 className="font-medium text-gray-900 hover:text-blue-600 hover:underline">{topic.name}</h3>
+              </Link>
               <p className="mt-1 text-sm text-gray-500">{topic.subject ?? '—'}</p>
               <p className="mt-2 text-sm font-semibold text-gray-700">
                 {topic.question_count} {topic.question_count === 1 ? 'question' : 'questions'}

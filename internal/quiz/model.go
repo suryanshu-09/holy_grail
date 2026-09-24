@@ -51,6 +51,23 @@ type QuizRequest struct {
 	Subject string `json:"subject,omitempty"`
 	// Query is the original user request (e.g. "Quiz me on deadlocks").
 	Query string `json:"query,omitempty"`
+	// QuestionType filters by question type (e.g. "mcq", "descriptive",
+	// normalized to lowercase; "" = any).
+	QuestionType string `json:"question_type,omitempty"`
+	// YearMin/YearMax bound the source PYQ year (inclusive, nil = unbounded).
+	YearMin *int `json:"year_min,omitempty"`
+	YearMax *int `json:"year_max,omitempty"`
+	// OnlyUnseen restricts to questions the user has not attempted yet and
+	// OnlyIncorrect to questions the user previously answered incorrectly.
+	// They are mutually exclusive; enforcement happens upstream where attempt
+	// history lives, the generator treats them as validated pass-through.
+	OnlyUnseen    bool `json:"only_unseen,omitempty"`
+	OnlyIncorrect bool `json:"only_incorrect,omitempty"`
+	// ExcludeSourceIDs drops these source question IDs; OnlySourceIDs
+	// restricts to them. Applied in-memory (see prepareSources) so they hold
+	// even when the retriever ignores them.
+	ExcludeSourceIDs []string `json:"exclude_source_ids,omitempty"`
+	OnlySourceIDs    []string `json:"only_source_ids,omitempty"`
 }
 
 // QuizQuestion is a single generated quiz item with source traceability.
@@ -114,10 +131,45 @@ func (r *QuizRequest) Validate() error {
 	r.Topics = cleaned
 	r.Subject = strings.TrimSpace(r.Subject)
 	r.Query = strings.TrimSpace(r.Query)
+	r.QuestionType = strings.ToLower(strings.TrimSpace(r.QuestionType))
+	if r.YearMin != nil && *r.YearMin < 0 {
+		return fmt.Errorf("year_min %d must be non-negative", *r.YearMin)
+	}
+	if r.YearMax != nil && *r.YearMax < 0 {
+		return fmt.Errorf("year_max %d must be non-negative", *r.YearMax)
+	}
+	if r.YearMin != nil && r.YearMax != nil && *r.YearMin > *r.YearMax {
+		return fmt.Errorf("year_min %d must not exceed year_max %d", *r.YearMin, *r.YearMax)
+	}
+	if r.OnlyUnseen && r.OnlyIncorrect {
+		return fmt.Errorf("only_unseen and only_incorrect are mutually exclusive")
+	}
+	r.ExcludeSourceIDs = cleanIDs(r.ExcludeSourceIDs)
+	r.OnlySourceIDs = cleanIDs(r.OnlySourceIDs)
 	return nil
+}
+
+// cleanIDs trims IDs, drops empties and dedupes preserving order.
+func cleanIDs(in []string) []string {
+	cleaned := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, s := range in {
+		if t := strings.TrimSpace(s); t != "" {
+			if _, dup := seen[t]; !dup {
+				seen[t] = struct{}{}
+				cleaned = append(cleaned, t)
+			}
+		}
+	}
+	return cleaned
 }
 
 // NormalizedDifficulty returns the lowercase difficulty or "" for any.
 func (r QuizRequest) NormalizedDifficulty() string {
 	return strings.ToLower(strings.TrimSpace(r.Difficulty))
+}
+
+// NormalizedQuestionType returns the lowercase question type or "" for any.
+func (r QuizRequest) NormalizedQuestionType() string {
+	return strings.ToLower(strings.TrimSpace(r.QuestionType))
 }

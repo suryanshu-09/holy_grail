@@ -24,7 +24,8 @@ const DefaultMaxAttempts = 3
 //     resolution via the topics service.
 //
 // The retriever is expected to honor QuizRequest filtering (length as the
-// retrieval top-K, difficulty, topics, subject) on a best-effort basis; the
+// retrieval top-K, difficulty, topics, subject, question type, year range,
+// exclude/only source IDs) on a best-effort basis; the
 // generator additionally applies deterministic in-memory filtering for
 // difficulty/subject so quiz length and filtering hold even with a naive
 // retriever (e.g. fakes in tests).
@@ -93,7 +94,11 @@ func (r *HybridRetriever) Retrieve(ctx context.Context, req QuizRequest) ([]ques
 
 	topics := distinctNonEmpty(req.Topics)
 	if len(topics) == 0 {
-		return r.searchOnce(ctx, query, "", req, n)
+		got, err := r.searchOnce(ctx, query, "", req, n)
+		if err != nil {
+			return nil, err
+		}
+		return applyIDFilters(got, req), nil
 	}
 	// One branch per topic (OR semantics), merged deterministically.
 	seen := make(map[string]struct{})
@@ -110,11 +115,11 @@ func (r *HybridRetriever) Retrieve(ctx context.Context, req QuizRequest) ([]ques
 			seen[q.ID] = struct{}{}
 			out = append(out, q)
 			if len(out) >= n {
-				return out, nil
+				return applyIDFilters(out, req), nil
 			}
 		}
 	}
-	return out, nil
+	return applyIDFilters(out, req), nil
 }
 
 func (r *HybridRetriever) searchOnce(ctx context.Context, query, topic string, req QuizRequest, n int) ([]questions.Question, error) {
@@ -122,6 +127,9 @@ func (r *HybridRetriever) searchOnce(ctx context.Context, query, topic string, r
 	filter.Filter.Subject = strings.TrimSpace(req.Subject)
 	filter.Filter.Difficulty = strings.ToLower(strings.TrimSpace(req.Difficulty))
 	filter.Filter.Topic = strings.TrimSpace(topic)
+	filter.Filter.QuestionType = strings.TrimSpace(req.QuestionType)
+	filter.Filter.YearMin = req.YearMin
+	filter.Filter.YearMax = req.YearMax
 	filter.Filter.Limit = n
 	resp, err := r.Hybrid.Search(ctx, query, filter)
 	if err != nil {
@@ -175,10 +183,26 @@ func (r *QuestionRetriever) Retrieve(ctx context.Context, req QuizRequest) ([]qu
 		return nil, fmt.Errorf("quiz: list questions: %w", err)
 	}
 	wantTopics := distinctLower(req.Topics)
+	exclude := toIDSet(req.ExcludeSourceIDs)
+	only := toIDSet(req.OnlySourceIDs)
 	filtered := make([]questions.Question, 0, n)
 	for _, q := range got {
 		if !matchesDifficulty(q, req.Difficulty) {
 			continue
+		}
+		if !matchesQuestionType(q, req.QuestionType) {
+			continue
+		}
+		if !matchesYearRange(q, req.YearMin, req.YearMax) {
+			continue
+		}
+		if _, bad := exclude[strings.TrimSpace(q.ID)]; bad {
+			continue
+		}
+		if len(only) > 0 {
+			if _, ok := only[strings.TrimSpace(q.ID)]; !ok {
+				continue
+			}
 		}
 		if len(wantTopics) > 0 {
 			if r.TopicsForQuestion == nil {
@@ -340,10 +364,13 @@ func (g *QuizGenerator) GenerateWithMeta(ctx context.Context, req QuizRequest) (
 }
 
 // prepareSources dedupes by source ID (first wins), drops questions with an
-// empty ID or empty stem, and applies difficulty/subject filters. Order is
-// preserved so retrieval ranking (and the fallback) stays deterministic.
+// empty ID or empty stem, and applies difficulty/subject/question-type/year/
+// exclude/only-source filters. Order is preserved so retrieval ranking (and
+// the fallback) stays deterministic.
 func prepareSources(srcs []questions.Question, req QuizRequest) []questions.Question {
 	seen := make(map[string]struct{}, len(srcs))
+	exclude := toIDSet(req.ExcludeSourceIDs)
+	only := toIDSet(req.OnlySourceIDs)
 	out := make([]questions.Question, 0, len(srcs))
 	for _, q := range srcs {
 		if strings.TrimSpace(q.ID) == "" {
@@ -361,6 +388,20 @@ func prepareSources(srcs []questions.Question, req QuizRequest) []questions.Ques
 		}
 		if !matchesSubject(q, req.Subject) {
 			continue
+		}
+		if !matchesQuestionType(q, req.QuestionType) {
+			continue
+		}
+		if !matchesYearRange(q, req.YearMin, req.YearMax) {
+			continue
+		}
+		if _, bad := exclude[q.ID]; bad {
+			continue
+		}
+		if len(only) > 0 {
+			if _, ok := only[q.ID]; !ok {
+				continue
+			}
 		}
 		out = append(out, q)
 	}
@@ -398,6 +439,74 @@ func matchesSubject(q questions.Question, want string) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(*q.Subject), want)
+}
+
+// matchesQuestionType reports whether q satisfies the requested question
+// type (case-insensitive; empty means any). Questions without a recorded
+// type only match the unfiltered request.
+func matchesQuestionType(q questions.Question, want string) bool {
+	want = strings.ToLower(strings.TrimSpace(want))
+	if want == "" {
+		return true
+	}
+	if q.QuestionType == nil {
+		return false
+	}
+	return strings.ToLower(strings.TrimSpace(*q.QuestionType)) == want
+}
+
+// matchesYearRange reports whether q.Year falls inside the inclusive
+// [min,max] bounds. When a bound is set, questions without a recorded year
+// do not match.
+func matchesYearRange(q questions.Question, min, max *int) bool {
+	if min == nil && max == nil {
+		return true
+	}
+	if q.Year == nil {
+		return false
+	}
+	if min != nil && *q.Year < *min {
+		return false
+	}
+	if max != nil && *q.Year > *max {
+		return false
+	}
+	return true
+}
+
+// toIDSet builds a lookup set from ID lists (IDs are used verbatim;
+// Validate trims/dedupes them on the request path).
+func toIDSet(ids []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if strings.TrimSpace(id) != "" {
+			out[id] = struct{}{}
+		}
+	}
+	return out
+}
+
+// applyIDFilters enforces ExcludeSourceIDs/OnlySourceIDs on retriever output
+// for backends that ignore those metadata filters. Order is preserved.
+func applyIDFilters(srcs []questions.Question, req QuizRequest) []questions.Question {
+	if len(req.ExcludeSourceIDs) == 0 && len(req.OnlySourceIDs) == 0 {
+		return srcs
+	}
+	exclude := toIDSet(req.ExcludeSourceIDs)
+	only := toIDSet(req.OnlySourceIDs)
+	out := make([]questions.Question, 0, len(srcs))
+	for _, q := range srcs {
+		if _, bad := exclude[strings.TrimSpace(q.ID)]; bad {
+			continue
+		}
+		if len(only) > 0 {
+			if _, ok := only[strings.TrimSpace(q.ID)]; !ok {
+				continue
+			}
+		}
+		out = append(out, q)
+	}
+	return out
 }
 
 // assignQuizIDs fills empty quiz item IDs deterministically from the source

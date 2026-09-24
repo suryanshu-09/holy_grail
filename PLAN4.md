@@ -399,6 +399,24 @@ Only incorrect questions
 
 ---
 
+## Tasks
+
+- [x] Dashboard library counts (documents/questions/topics) + Recent Quizzes
+- [x] Document page years + question count + topics breakdown
+- [x] Topic page question count + difficulty breakdown + Start Quiz
+- [x] Quiz configuration: topic/difficulty/count/question type/year range/unseen/incorrect
+- [x] Backend quiz filters (question_type/year_min/year_max/only_unseen/only_incorrect/exclude+only source IDs) with validation
+- [x] Retrieval + in-memory filtering (hybrid filter push, post-filter, prompt constraints)
+- [x] HTTP GET/POST parsing (snake_case + camelCase) with 400 validation
+
+---
+
+Completed: 2026-09-24
+
+Verified: `pages/index.tsx` renders Your Library counts (documents/questions/topics) plus Recent Quizzes; `pages/documents/[id].tsx` adds an Overview section (year chips with range label, question count, per-topic breakdown with counts, Start quiz links); `pages/topics/[id].tsx` (new) shows question count, Easy/Medium/Hard breakdown and Start Quiz deep-linking to `/quiz?topic=` (prefilled in `pages/quiz/index.tsx`, topic cards in `pages/topics/index.tsx` link to it); `components/quiz/QuizSetupForm.tsx` adds question-type select, year min/max inputs and mutually-exclusive unseen/incorrect checkboxes with exclude/only source-ID passthrough; `lib/api.ts` sends `question_type`/`year_min`/`year_max`/`only_unseen`/`only_incorrect`/`exclude_source_ids`/`only_source_ids` via POST and GET; `internal/quiz/model.go` adds the new `QuizRequest` fields with normalization/validation (year bounds, unseen⊕incorrect, ID cleanup) plus `NormalizedQuestionType`; `service.go` filters by type/year/exclude/only in `prepareSources`, pushes type+years into hybrid search, post-filters retriever output (`applyIDFilters`) and enforces the same filters in `QuestionRetriever`; `prompt.go` renders type/year constraints; `internal/http/quiz.go` parses snake_case + camelCase GET/POST params with strict 400s; unit tests cover validation, filtering, retriever mapping and handlers; `go vet ./...`, `go test ./...` and `npm run build` pass.
+
+---
+
 # 27. Phase 22 — Testing
 
 Testing should happen continuously, but this phase consolidates it.
