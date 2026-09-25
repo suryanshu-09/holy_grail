@@ -627,12 +627,12 @@ Only optimize after correctness.
 
 ## Database
 
-- [ ] Add appropriate indexes
-- [ ] Analyze slow queries
-- [ ] Tune vector indexes
-- [ ] Avoid N+1 queries
-- [ ] Use connection pooling
-- [ ] Batch database operations
+- [x] Add appropriate indexes
+- [x] Analyze slow queries
+- [x] Tune vector indexes
+- [x] Avoid N+1 queries
+- [x] Use connection pooling
+- [x] Batch database operations
 
 ---
 
@@ -658,12 +658,18 @@ batch embedding
 
 ## Processing
 
-- [ ] Process pages concurrently where safe
-- [ ] Batch LLM calls where appropriate
-- [ ] Avoid reprocessing unchanged documents
-- [ ] Cache embeddings
-- [ ] Cache expensive AI operations
-- [ ] Track processing duration
+- [x] Process pages concurrently where safe
+- [x] Batch LLM calls where appropriate
+- [x] Avoid reprocessing unchanged documents
+- [x] Cache embeddings
+- [x] Cache expensive AI operations
+- [x] Track processing duration
+
+---
+
+Completed: 2026-09-25
+
+Verified: `migrations/010_add_perf_indexes.sql` adds composite/btree indexes (questions, documents, jobs, quiz, topics, embeddings) with EXPLAIN slow-query notes, drops the legacy L2 ivfflat, adds cosine ivfflat + version-guarded HNSW cosine vector indexes and ANALYZE refresh; `internal/database/db.go` adds tuned connection pooling (`DB_MAX_OPEN_CONNS`/`DB_MAX_IDLE_CONNS`/`DB_CONN_MAX_LIFETIME`, pgx stdlib pool settings); `internal/questions/repository.go` + `internal/topics/repository.go` add batch ops (`GetByIDs`, batch topic/embedding joins) to avoid N+1; `internal/embeddings/service.go` + `repository.go` add batch embeddings (`EmbedBatch` with chunking), embedding cache (memory + `FindReusable`/`Copy` dedup by model+input-hash); `internal/extraction/pipeline.go` + `service.go` + `performance.go` add concurrent page processing (bounded `EXTRACT_CONCURRENCY` worker pool), batched LLM classification with prompt-hash dedup cache, manifest-based skip for unchanged documents, classifier cache for expensive AI ops, and per-step `ProcessingDurations` timings artifact; unit tests cover indexes/pool, batch repos, batch embeddings, caches, concurrency, skip-reprocess and durations; `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 ---
 

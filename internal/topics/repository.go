@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lib/pq"
+
 	"github.com/suryanshu-09/holy_grail/internal/apperr"
 )
 
@@ -323,6 +325,53 @@ func (r *repository) RemoveQuestionTopic(ctx context.Context, questionID, topicI
 		return fmt.Errorf("topics: remove question topic: %w", err)
 	}
 	return nil
+}
+
+// BatchReader is the optional batch contract implemented by *repository.
+// It exists alongside Repository (which is unchanged) so existing callers and
+// mocks keep working. Use a type assertion to opt into batched reads.
+type BatchReader interface {
+	ListTopicsForQuestions(ctx context.Context, questionIDs []string) (map[string][]Topic, error)
+}
+
+// Compile-time check that the SQL repository supports batched reads.
+var _ BatchReader = (*repository)(nil)
+
+// ListTopicsForQuestions returns topics for many questions with a single query
+// (WHERE qt.question_id = ANY($1)) instead of one query per question (N+1).
+// Every requested question ID is present in the result; questions with no
+// topics map to an empty (non-nil) slice.
+func (r *repository) ListTopicsForQuestions(ctx context.Context, questionIDs []string) (map[string][]Topic, error) {
+	out := make(map[string][]Topic, len(questionIDs))
+	for _, id := range questionIDs {
+		out[id] = []Topic{}
+	}
+	if len(questionIDs) == 0 {
+		return out, nil
+	}
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT qt.question_id, t.id, t.name, t.subject, t.created_at
+		 FROM topics t
+		 JOIN question_topics qt ON qt.topic_id = t.id
+		 WHERE qt.question_id = ANY($1)
+		 ORDER BY qt.question_id, t.name ASC`, pq.Array(questionIDs))
+	if err != nil {
+		return nil, fmt.Errorf("topics: list for questions batch: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var qid string
+		var t Topic
+		if err := rows.Scan(&qid, &t.ID, &t.Name, &t.Subject, &t.CreatedAt); err != nil {
+			return nil, fmt.Errorf("topics: scan for questions batch: %w", err)
+		}
+		out[qid] = append(out[qid], t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("topics: rows for questions batch: %w", err)
+	}
+	return out, nil
 }
 
 // ListTopicsForQuestion returns all topics associated with a question.

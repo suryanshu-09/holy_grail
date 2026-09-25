@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lib/pq"
+
 	"github.com/suryanshu-09/holy_grail/internal/apperr"
 )
 
@@ -70,6 +72,138 @@ func (r *repository) Insert(ctx context.Context, q Question) error {
 		return fmt.Errorf("questions: insert: %w", err)
 	}
 	return nil
+}
+
+// BatchRepository is the optional batch contract implemented by *repository.
+// It exists alongside Repository (which is unchanged) so existing callers and
+// mocks keep working. Use a type assertion to opt into batched operations.
+type BatchRepository interface {
+	BatchInsert(ctx context.Context, qs []Question) error
+	ListTopicsForQuestions(ctx context.Context, questionIDs []string) (map[string][]QuestionTopicInfo, error)
+}
+
+// Compile-time check that the SQL repository supports batched operations.
+var _ BatchRepository = (*repository)(nil)
+
+// BatchInsert persists multiple questions with a single multi-row INSERT
+// statement instead of one round-trip per question.
+func (r *repository) BatchInsert(ctx context.Context, qs []Question) error {
+	if len(qs) == 0 {
+		return nil
+	}
+	query, args := buildBatchInsertQuery(qs)
+	if _, err := r.db.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("questions: batch insert: %w", err)
+	}
+	return nil
+}
+
+// buildBatchInsertQuery renders a single multi-row INSERT for qs.
+// Rows with an explicit ID bind it; rows without one use gen_random_uuid().
+func buildBatchInsertQuery(qs []Question) (string, []interface{}) {
+	const cols = `(id, document_id, question_number, question_text, page_number, start_page, end_page, start_offset, end_offset, confidence, question_type, options_json, extraction_notes_json, images_json, year, subject, difficulty)`
+	var sb strings.Builder
+	sb.WriteString("INSERT INTO questions " + cols + " VALUES ")
+	args := make([]interface{}, 0, len(qs)*17)
+	for i, q := range qs {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		sb.WriteString("(")
+		for c := 0; c < 17; c++ {
+			if c > 0 {
+				sb.WriteString(", ")
+			}
+			// First column is id: generate server-side when empty.
+			if c == 0 && q.ID == "" {
+				sb.WriteString("gen_random_uuid()")
+				continue
+			}
+			args = append(args, batchInsertColumn(q, c))
+			sb.WriteString(fmt.Sprintf("$%d", len(args)))
+		}
+		sb.WriteString(")")
+	}
+	return sb.String(), args
+}
+
+// batchInsertColumn maps a positional column index to the question field.
+func batchInsertColumn(q Question, col int) interface{} {
+	switch col {
+	case 0:
+		return q.ID
+	case 1:
+		return q.DocumentID
+	case 2:
+		return q.QuestionNumber
+	case 3:
+		return q.QuestionText
+	case 4:
+		return q.PageNumber
+	case 5:
+		return q.StartPage
+	case 6:
+		return q.EndPage
+	case 7:
+		return q.StartOffset
+	case 8:
+		return q.EndOffset
+	case 9:
+		return q.Confidence
+	case 10:
+		return q.QuestionType
+	case 11:
+		return q.OptionsJSON
+	case 12:
+		return q.ExtractionNotesJSON
+	case 13:
+		return q.ImagesJSON
+	case 14:
+		return q.Year
+	case 15:
+		return q.Subject
+	case 16:
+		return q.Difficulty
+	default:
+		return nil
+	}
+}
+
+// ListTopicsForQuestions returns topics for many questions with a single query
+// (WHERE qt.question_id = ANY($1)) instead of one query per question (N+1).
+// The result maps every requested question ID to its topics; questions with no
+// topics map to an empty (non-nil) slice.
+func (r *repository) ListTopicsForQuestions(ctx context.Context, questionIDs []string) (map[string][]QuestionTopicInfo, error) {
+	out := make(map[string][]QuestionTopicInfo, len(questionIDs))
+	for _, id := range questionIDs {
+		out[id] = []QuestionTopicInfo{}
+	}
+	if len(questionIDs) == 0 {
+		return out, nil
+	}
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT qt.question_id, t.id, t.name, t.subject, qt.confidence, qt.created_at
+		 FROM question_topics qt
+		 JOIN topics t ON t.id = qt.topic_id
+		 WHERE qt.question_id = ANY($1)
+		 ORDER BY qt.question_id, t.name ASC`, pq.Array(questionIDs))
+	if err != nil {
+		return nil, fmt.Errorf("questions: list topics batch: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var qid string
+		var ti QuestionTopicInfo
+		if err := rows.Scan(&qid, &ti.ID, &ti.Name, &ti.Subject, &ti.Confidence, &ti.CreatedAt); err != nil {
+			return nil, fmt.Errorf("questions: scan topics batch: %w", err)
+		}
+		out[qid] = append(out[qid], ti)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("questions: rows topics batch: %w", err)
+	}
+	return out, nil
 }
 
 // List returns questions matching the filter. TopicID filters through the

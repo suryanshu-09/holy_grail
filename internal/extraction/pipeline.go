@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/suryanshu-09/holy_grail/internal/documents"
 	"github.com/suryanshu-09/holy_grail/internal/embeddings"
@@ -159,9 +161,24 @@ func (s *ExtractionService) Extract(ctx context.Context, documentID, storagePath
 	finishOverall := s.steps().Start(ctx, "document_extraction", base)
 	overallErr := error(nil)
 	questionCount := 0
+	totalStart := time.Now()
+	durations := ProcessingDurations{DocumentID: documentID}
 	defer func() {
+		durations.TotalMs = msSince(totalStart)
+		// Persist timings artifact (best-effort) and emit a structured
+		// durations step so Phase 24 processing times are queryable via
+		// the existing StepLogger without new infrastructure.
+		s.writeTimings(durations)
 		extra := map[string]any{"questions": questionCount}
+		for k, v := range durations.toExtra() {
+			extra[k] = v
+		}
 		finishOverall(overallErr, extra)
+		s.steps().Log(ctx, observability.StepEntry{
+			DocumentID: documentID, JobID: base.JobID,
+			Operation: "processing_durations", Status: observability.StatusSuccess,
+			Duration: time.Since(totalStart), Extra: durations.toExtra(),
+		})
 	}()
 
 	pdfPath, err := s.resolvePDF(documentID, storagePath)
@@ -170,9 +187,64 @@ func (s *ExtractionService) Extract(ctx context.Context, documentID, storagePath
 		return DocumentExtraction{}, err
 	}
 
+	// Avoid reprocessing unchanged docs: when the PDF SHA-256 matches the
+	// stored manifest and pages.json decodes, reuse the cached extraction
+	// and skip the expensive parse/vision/save stages. Downstream stages
+	// (questions/classify/embeddings) still run so the flow never breaks;
+	// they are idempotent and cheap relative to PDF parsing.
+	contentHash := ContentHashFile(pdfPath)
+	durations.ContentHash = contentHash
+	if cached, ok := s.shouldSkipExtraction(documentID, contentHash); ok && cached != nil {
+		result := *cached
+		durations.SkippedExtraction = true
+		durations.Skipped = true
+		s.steps().Log(ctx, observability.StepEntry{
+			DocumentID: documentID, JobID: base.JobID,
+			Operation: "page_extraction", Status: observability.StatusSuccess,
+			Extra: map[string]any{"pages": len(result.Pages), "skipped": true, "content_hash": contentHash},
+		})
+		// Still run downstream stages against the cached pages.
+		qStart := time.Now()
+		if err := s.ExtractQuestions(ctx, result); err != nil {
+			overallErr = err
+			return DocumentExtraction{}, s.markFailed(ctx, documentID, err)
+		}
+		durations.QuestionMs = msSince(qStart)
+		questionCount = s.countPersistedQuestions(ctx, documentID)
+
+		cStart := time.Now()
+		if s.classifier != nil && s.topicRepo != nil {
+			if err := s.ClassifyDocument(ctx, documentID); err != nil {
+				slog.Warn("extraction: classification failed (non-fatal)", "document_id", documentID, "job_id", base.JobID, "error", err)
+			}
+		}
+		durations.ClassificationMs = msSince(cStart)
+
+		eStart := time.Now()
+		if s.embeddings != nil {
+			finishEmbed := s.steps().Start(ctx, "embedding", base)
+			embeddingResult, err := s.embeddings.EmbedDocument(ctx, documentID)
+			if err != nil {
+				finishEmbed(err, nil)
+				slog.Warn("extraction: embedding failed (non-fatal)", "document_id", documentID, "job_id", base.JobID, "error", err)
+			} else {
+				finishEmbed(nil, map[string]any{"failed": embeddingResult.Failed})
+			}
+		}
+		durations.EmbeddingMs = msSince(eStart)
+
+		if err := s.repo.UpdateStatus(ctx, documentID, documents.StatusExtracted); err != nil {
+			overallErr = fmt.Errorf("extraction: mark %q extracted: %w", documentID, err)
+			return DocumentExtraction{}, overallErr
+		}
+		return result, nil
+	}
+
+	pageStart := time.Now()
 	finishPages := s.steps().Start(ctx, "page_extraction", base)
 	result, err := s.extractor.ExtractFile(ctx, documentID, pdfPath)
-	finishPages(err, map[string]any{"pages": len(result.Pages)})
+	durations.PageExtractionMs = msSince(pageStart)
+	finishPages(err, map[string]any{"pages": len(result.Pages), "page_extraction_ms": durations.PageExtractionMs})
 	if err != nil {
 		overallErr = err
 		return DocumentExtraction{}, s.markFailed(ctx, documentID, err)
@@ -181,13 +253,20 @@ func (s *ExtractionService) Extract(ctx context.Context, documentID, storagePath
 	// Vision descriptions are best-effort and non-fatal: describe extracted
 	// images after extractImages so pages.json/images.json manifests carry
 	// description + figure-type context. Failures are logged and skipped.
+	visionStart := time.Now()
 	finishVision := s.steps().Start(ctx, "vision_describe", base)
 	s.describeImages(ctx, documentID, &result)
-	finishVision(nil, map[string]any{"pages": len(result.Pages)})
+	durations.VisionMs = msSince(visionStart)
+	finishVision(nil, map[string]any{"pages": len(result.Pages), "vision_ms": durations.VisionMs})
 
+	saveStart := time.Now()
 	finishSave := s.steps().Start(ctx, "save_results", base)
 	saveErr := s.saveResults(documentID, result)
-	finishSave(saveErr, map[string]any{"pages": len(result.Pages)})
+	if saveErr == nil && contentHash != "" {
+		s.writeManifest(documentID, contentHash, result.PageCount)
+	}
+	durations.SaveMs = msSince(saveStart)
+	finishSave(saveErr, map[string]any{"pages": len(result.Pages), "save_ms": durations.SaveMs})
 	if saveErr != nil {
 		overallErr = saveErr
 		return DocumentExtraction{}, s.markFailed(ctx, documentID, saveErr)
@@ -196,13 +275,17 @@ func (s *ExtractionService) Extract(ctx context.Context, documentID, storagePath
 	// Run question extraction and persist detected questions. Failures in
 	// question persistence mark the document failed so they are visible to
 	// operators and can be retried.
+	qStart := time.Now()
 	if err := s.ExtractQuestions(ctx, result); err != nil {
+		durations.QuestionMs = msSince(qStart)
 		overallErr = err
 		return DocumentExtraction{}, s.markFailed(ctx, documentID, err)
 	}
+	durations.QuestionMs = msSince(qStart)
 	questionCount = s.countPersistedQuestions(ctx, documentID)
 
 	// Topic classification is non-fatal: log and continue on LLM failure.
+	cStart := time.Now()
 	if s.classifier != nil && s.topicRepo != nil {
 		if err := s.ClassifyDocument(ctx, documentID); err != nil {
 			slog.Warn("extraction: classification failed (non-fatal)", "document_id", documentID, "job_id", base.JobID, "error", err)
@@ -217,7 +300,9 @@ func (s *ExtractionService) Extract(ctx context.Context, documentID, storagePath
 			Extra: map[string]any{"skipped": true},
 		})
 	}
+	durations.ClassificationMs = msSince(cStart)
 
+	eStart := time.Now()
 	if s.embeddings != nil {
 		finishEmbed := s.steps().Start(ctx, "embedding", base)
 		embeddingResult, err := s.embeddings.EmbedDocument(ctx, documentID)
@@ -233,6 +318,7 @@ func (s *ExtractionService) Extract(ctx context.Context, documentID, storagePath
 	} else {
 		slog.Debug("extraction: embeddings skipped (no embedder configured)", "document_id", documentID, "job_id", base.JobID)
 	}
+	durations.EmbeddingMs = msSince(eStart)
 
 	if err := s.repo.UpdateStatus(ctx, documentID, documents.StatusExtracted); err != nil {
 		overallErr = fmt.Errorf("extraction: mark %q extracted: %w", documentID, err)
@@ -267,11 +353,13 @@ func (s *ExtractionService) countPersistedQuestions(ctx context.Context, documen
 const visionCacheFileName = "vision_cache.json"
 
 // describeImages fills Description/FigureType/DescribedBy on every image in
-// result using the configured VisionDescriber. It is best-effort and never
-// returns an error: a nil describer is a no-op, per-image failures are logged
-// and skipped, and cache I/O failures are ignored. Results are cached by
-// SHA-256 of the image file bytes (persisted per document) so repeated runs
-// are cheap and deterministic.
+// result using the configured VisionDescriber. It fans out over the same
+// bounded worker pool as page extraction (extractConcurrency), preserves
+// deterministic cache behavior (SHA-256 of image bytes persisted per
+// document), and is best-effort: a nil describer is a no-op, per-image
+// failures are logged and skipped, cache I/O failures are ignored, and ctx
+// cancellation stops new work. Results are cached by content hash so
+// repeated runs are cheap and deterministic.
 func (s *ExtractionService) describeImages(ctx context.Context, documentID string, result *DocumentExtraction) {
 	if s.vision == nil || result == nil {
 		return
@@ -288,6 +376,7 @@ func (s *ExtractionService) describeImages(ctx context.Context, documentID strin
 	}
 
 	cache := s.loadVisionCache(documentID)
+	var cacheMu sync.Mutex
 	dirty := false
 
 	// Build page-text context for grounding (truncated per image).
@@ -296,12 +385,14 @@ func (s *ExtractionService) describeImages(ctx context.Context, documentID strin
 		pageText[pg.Number] = pg.Text
 	}
 
+	type visionJob struct {
+		pi, ii int
+		hash   string
+		input  DescribeInput
+	}
+	var jobs []visionJob
 	for pi := range result.Pages {
 		for ii := range result.Pages[pi].Images {
-			if err := ctx.Err(); err != nil {
-				slog.Warn("extraction: vision describe stopped (context cancelled, non-fatal)", "document_id", documentID, "error", err)
-				break
-			}
 			img := &result.Pages[pi].Images[ii]
 			if strings.TrimSpace(img.Description) != "" {
 				continue
@@ -309,37 +400,70 @@ func (s *ExtractionService) describeImages(ctx context.Context, documentID strin
 			absPath := s.imageAbsPath(documentID, *img)
 			hash := hashFileSHA256(absPath)
 			if hash == "" {
-				// Fall back to a stable synthetic key so identical names
-				// still share cache entries within/across runs.
 				hash = "name:" + img.Name
 			}
-			if cached, ok := cache[hash]; ok {
+			cacheMu.Lock()
+			cached, ok := cache[hash]
+			cacheMu.Unlock()
+			if ok {
 				img.Description = cached.Description
 				img.FigureType = NormalizeFigureType(cached.FigureType)
 				img.DescribedBy = cached.DescribedBy
 				continue
 			}
-			out, err := s.vision.Describe(ctx, DescribeInput{
-				Name:   img.Name,
-				Page:   img.Page,
-				Path:   absPath,
-				Format: img.Format,
-				// Prefer the image's own page text; fall back to the page
-				// currently being iterated when Page is unset (0).
-				Context: truncateRunes(firstNonEmpty(pageText[img.Page], result.Pages[pi].Text), 500),
+			jobs = append(jobs, visionJob{
+				pi: pi, ii: ii, hash: hash,
+				input: DescribeInput{
+					Name:   img.Name,
+					Page:   img.Page,
+					Path:   absPath,
+					Format: img.Format,
+					Context: truncateRunes(firstNonEmpty(pageText[img.Page], result.Pages[pi].Text), 500),
+				},
 			})
-			if err != nil {
-				slog.Warn("extraction: vision describe failed (non-fatal)", "document_id", documentID, "image", img.Name, "error", err)
-				continue
-			}
-			out.FigureType = NormalizeFigureType(out.FigureType)
-			img.Description = strings.TrimSpace(out.Description)
-			img.FigureType = out.FigureType
-			img.DescribedBy = out.DescribedBy
-			cache[hash] = out
-			dirty = true
 		}
 	}
+	if len(jobs) == 0 {
+		return
+	}
+
+	concurrency := extractConcurrency()
+	if concurrency > len(jobs) {
+		concurrency = len(jobs)
+	}
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	for _, j := range jobs {
+		if err := ctx.Err(); err != nil {
+			slog.Warn("extraction: vision describe stopped (context cancelled, non-fatal)", "document_id", documentID, "error", err)
+			break
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(job visionJob) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if ctx.Err() != nil {
+				return
+			}
+			out, err := s.vision.Describe(ctx, job.input)
+			if err != nil {
+				slog.Warn("extraction: vision describe failed (non-fatal)", "document_id", documentID, "image", job.input.Name, "error", err)
+				return
+			}
+			out.FigureType = NormalizeFigureType(out.FigureType)
+			out.Description = strings.TrimSpace(out.Description)
+			// Each job owns a distinct (pi,ii); no two jobs share a target.
+			result.Pages[job.pi].Images[job.ii].Description = out.Description
+			result.Pages[job.pi].Images[job.ii].FigureType = out.FigureType
+			result.Pages[job.pi].Images[job.ii].DescribedBy = out.DescribedBy
+			cacheMu.Lock()
+			cache[job.hash] = out
+			dirty = true
+			cacheMu.Unlock()
+		}(j)
+	}
+	wg.Wait()
 
 	if dirty {
 		s.saveVisionCache(documentID, cache)
@@ -521,12 +645,21 @@ type ClassificationArtifact struct {
 }
 
 // ClassifyDocument classifies all questions for a document on-demand.
-// It fetches questions via the questions repository, calls the classifier for each
-// question, and persists topics via FindOrCreate + AddQuestionTopic with confidence.
-// It is non-fatal per-question: LLM failures are logged and continued; the method
-// returns nil unless the classifier or topic repo is not configured or a fatal DB
-// error occurs. It also writes debug artifacts (classification.json) under the
-// extraction dir for observability.
+// It fetches questions via the questions repository, dedups identical
+// (subject, text) inputs via a prompt-hash cache (in-memory per run plus a
+// persisted classifier_cache.json per document), classifies each unique
+// input once through ClassifyBatch (bounded concurrency + per-item retry
+// inside the classifier), and falls back to per-question ClassifyQuestion
+// for any batch slot that failed. Persistence via FindOrCreate +
+// AddQuestionTopic stays per-question and non-fatal.
+//
+// Batching note: a single "one LLM call for N questions" prompt is
+// deliberately NOT used. The LLM contract is per-question strict JSON
+// (subject + topics with confidence); merging N questions into one prompt
+// would change the schema, break validation/dedup/confidence clamping, and
+// make partial failure unrecoverable. Client-side concurrent batching
+// (ClassifyBatch) gives the throughput win while keeping per-question
+// validation and fallback intact.
 func (s *ExtractionService) ClassifyDocument(ctx context.Context, documentID string) error {
 	if !safeSegment(documentID) {
 		return fmt.Errorf("extraction: unsafe document id %q", documentID)
@@ -584,39 +717,130 @@ func (s *ExtractionService) ClassifyDocument(ctx context.Context, documentID str
 		return nil
 	}
 
-	var artifacts []ClassificationArtifact
-	for _, q := range allQuestions {
+	var artifacts = make([]ClassificationArtifact, len(allQuestions))
+	// Group question indices by prompt-hash key so duplicate texts share one
+	// LLM call. Empty texts are recorded as errors up front.
+	keyOf := make([]string, len(allQuestions))
+	uniqueKeys := []string{}
+	keyToIndices := make(map[string][]int)
+	persistedCache := s.loadClassifierCache(documentID)
+	runCache := make(map[string][]topics.TopicLabel, len(persistedCache))
+	for k, v := range persistedCache {
+		runCache[k] = v
+	}
+	uniqueItems := []topics.BatchItem{}
+	uniqueKeyOrder := []string{}
+	for idx, q := range allQuestions {
 		if q.QuestionText == nil || len(*q.QuestionText) == 0 {
 			slog.Warn("extraction: skip classification for question with empty text", "question_id", q.ID)
-			artifacts = append(artifacts, ClassificationArtifact{
+			artifacts[idx] = ClassificationArtifact{
 				QuestionID:   q.ID,
 				QuestionText: "",
 				Labels:       nil,
 				Error:        "empty question text",
-			})
+			}
 			continue
 		}
 		subject := ""
 		if q.Subject != nil {
 			subject = *q.Subject
 		}
-		// Also consider document subject fallback? For now use question subject.
-		labels, err := s.classifier.ClassifyQuestion(ctx, *q.QuestionText, subject)
-		promptHash := ""
-		if s.classifier != nil {
-			promptHash = s.classifier.LastPromptHash()
+		key := classifyCacheKey(*q.QuestionText, subject)
+		keyOf[idx] = key
+		if _, seen := keyToIndices[key]; !seen {
+			uniqueKeys = append(uniqueKeys, key)
+			if _, hit := runCache[key]; !hit {
+				uniqueItems = append(uniqueItems, topics.BatchItem{QuestionText: *q.QuestionText, Subject: subject})
+				uniqueKeyOrder = append(uniqueKeyOrder, key)
+			}
 		}
-		if err != nil {
-			slog.Warn("extraction: classification failed for question (non-fatal)", "question_id", q.ID, "error", err)
-			artifacts = append(artifacts, ClassificationArtifact{
-				QuestionID:   q.ID,
-				QuestionText: *q.QuestionText,
-				Subject:      q.Subject,
-				Labels:       nil,
-				Error:        err.Error(),
-				PromptHash:   promptHash,
-			})
-			continue
+		keyToIndices[key] = append(keyToIndices[key], idx)
+	}
+
+	// Classify each unique uncached input once via the concurrent batch
+	// path. Per-question fallback covers batch slots that still fail.
+	if len(uniqueItems) > 0 && ctx.Err() == nil {
+		batchResults, batchErr := s.classifier.ClassifyBatch(ctx, uniqueItems)
+		if batchErr != nil {
+			slog.Warn("extraction: batch classification had failures, falling back per-question (non-fatal)", "error", batchErr)
+		}
+		for i, key := range uniqueKeyOrder {
+			var labels []topics.TopicLabel
+			var perr error
+			if i < len(batchResults) && batchResults[i] != nil {
+				labels = batchResults[i]
+			} else {
+				perr = fmt.Errorf("extraction: batch slot %d missing", i)
+			}
+			if perr != nil || labels == nil && batchErr != nil {
+				// Per-question fallback for failed slots only.
+				fb, ferr := s.classifier.ClassifyQuestion(ctx, uniqueItems[i].QuestionText, uniqueItems[i].Subject)
+				if ferr != nil {
+					slog.Warn("extraction: classification fallback failed (non-fatal)", "error", ferr)
+					// Mark all questions sharing this key as failed.
+					for _, idx := range keyToIndices[key] {
+						q := allQuestions[idx]
+						artifacts[idx] = ClassificationArtifact{
+							QuestionID:   q.ID,
+							QuestionText: *q.QuestionText,
+							Subject:      q.Subject,
+							Labels:       nil,
+							Error:        ferr.Error(),
+							PromptHash:   promptHashShort(key),
+						}
+					}
+					continue
+				}
+				labels = fb
+			}
+			if labels == nil {
+				labels = []topics.TopicLabel{}
+			}
+			runCache[key] = labels
+		}
+		// Persist updated prompt cache (best-effort, never fatal).
+		s.saveClassifierCache(documentID, runCache)
+	}
+	for idx, q := range allQuestions {
+		if q.QuestionText == nil || len(*q.QuestionText) == 0 {
+			continue // already recorded above
+		}
+		if artifacts[idx].Error != "" {
+			continue // fallback failure already recorded
+		}
+		subject := ""
+		if q.Subject != nil {
+			subject = *q.Subject
+		}
+		key := keyOf[idx]
+		labels, ok := runCache[key]
+		promptHash := promptHashShort(key)
+		if !ok {
+			// Cache miss that batch did not fill (e.g. ctx cancelled):
+			// last-resort per-question call keeps the flow complete.
+			var err error
+			labels, err = s.classifier.ClassifyQuestion(ctx, *q.QuestionText, subject)
+			if s.classifier != nil {
+				if h := s.classifier.LastPromptHash(); h != "" {
+					promptHash = h
+				}
+			}
+			if err != nil {
+				slog.Warn("extraction: classification failed for question (non-fatal)", "question_id", q.ID, "error", err)
+				artifacts[idx] = ClassificationArtifact{
+					QuestionID:   q.ID,
+					QuestionText: *q.QuestionText,
+					Subject:      q.Subject,
+					Labels:       nil,
+					Error:        err.Error(),
+					PromptHash:   promptHash,
+				}
+				continue
+			}
+			if labels == nil {
+				labels = []topics.TopicLabel{}
+			}
+			runCache[key] = labels
 		}
 
 		// Persist each label via FindOrCreate + AddQuestionTopic
@@ -649,13 +873,13 @@ func (s *ExtractionService) ClassifyDocument(ctx context.Context, documentID str
 			}
 		}
 
-		artifacts = append(artifacts, ClassificationArtifact{
+		artifacts[idx] = ClassificationArtifact{
 			QuestionID:   q.ID,
 			QuestionText: *q.QuestionText,
 			Subject:      q.Subject,
 			Labels:       labels,
 			PromptHash:   promptHash,
-		})
+		}
 	}
 
 	// Write debug artifact (non-fatal if fails)

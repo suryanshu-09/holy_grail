@@ -15,6 +15,8 @@ type AppConfig struct {
 	DBMaxOpenConns     int
 	DBMaxIdleConns     int
 	DBConnMaxLifetime  time.Duration
+	DBConnMaxIdleTime  time.Duration
+	VectorEFSearch     int
 	CORSAllowedOrigin  string
 	DataDir            string
 	MaxUploadBytes     int64
@@ -49,6 +51,8 @@ func NewAppConfig() AppConfig {
 		DBMaxOpenConns:     getIntEnv("DB_MAX_OPEN_CONNS", 25),
 		DBMaxIdleConns:     getIntEnv("DB_MAX_IDLE_CONNS", 5),
 		DBConnMaxLifetime:  getDurationEnv("DB_CONN_MAX_LIFETIME", 30*time.Minute),
+		DBConnMaxIdleTime:  getDurationEnv("DB_CONN_MAX_IDLE_TIME", 5*time.Minute),
+		VectorEFSearch:     getIntEnv("PGVECTOR_EF_SEARCH", 40),
 		CORSAllowedOrigin:  getEnv("CORS_ALLOWED_ORIGIN", ""),
 		DataDir:            getEnv("STORAGE_PATH", "data"),
 		MaxUploadBytes:     getInt64Env("MAX_UPLOAD_BYTES", 50*1024*1024),

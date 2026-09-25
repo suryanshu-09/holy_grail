@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	pdf "github.com/ledongthuc/pdf"
@@ -73,6 +74,13 @@ func (s *Service) Extract(ctx context.Context, documentID string) (DocumentExtra
 
 // ExtractFile is the storage-agnostic form of Extract: it parses the PDF at
 // path and attributes the pages to documentID.
+//
+// Page text extraction runs concurrently in a bounded worker pool sized by
+// extractConcurrency (default NumCPU, override EXTRACT_CONCURRENCY). Page
+// order is preserved (results are written by index) and ctx cancellation is
+// honored per page. The underlying PDF reader is not safe for concurrent
+// use, so raw page reads are serialized with a mutex while normalization
+// and OCR fallback run concurrently.
 func (s *Service) ExtractFile(ctx context.Context, documentID, path string) (DocumentExtraction, error) {
 	if err := ctx.Err(); err != nil {
 		return DocumentExtraction{}, fmt.Errorf("extraction: %w", err)
@@ -88,41 +96,80 @@ func (s *Service) ExtractFile(ctx context.Context, documentID, path string) (Doc
 	result := DocumentExtraction{
 		DocumentID: documentID,
 		PageCount:  pageCount,
-		Pages:      make([]Page, 0, pageCount),
+		Pages:      make([]Page, pageCount),
 	}
-	for i := 1; i <= pageCount; i++ {
-		page := Page{Number: i, Images: []ImageRef{}}
-
-		p := reader.Page(i)
-		if p.V.IsNull() {
-			page.Error = fmt.Sprintf("page %d is missing from the document structure", i)
-			result.Pages = append(result.Pages, page)
-			continue
+	if pageCount == 0 {
+		result.Pages = []Page{}
+	} else {
+		concurrency := extractConcurrency()
+		if concurrency > pageCount {
+			concurrency = pageCount
 		}
-
-		text, err := p.GetPlainText(nil)
-		if err != nil {
-			page.Error = err.Error()
-			result.Pages = append(result.Pages, page)
-			continue
-		}
-		page.Text = normalizeText(text)
-		page.NeedsOCR = needsOCR(page.Text)
-
-		// OCR fallback: only run on detected pages and only when an OCRer is
-		// configured. Failures skip gracefully — a missing or broken OCR
-		// setup never aborts extraction; such pages simply keep NeedsOCR set
-		// and whatever text was extracted.
-		if page.NeedsOCR && s.ocr != nil {
-			if ocrText, err := s.ocr.OCR(ctx, path, i); err == nil {
-				if cleaned := normalizeText(ocrText); cleaned != "" {
-					page.Text = cleaned
-					page.NeedsOCR = false
+		sem := make(chan struct{}, concurrency)
+		var wg sync.WaitGroup
+		var pdfMu sync.Mutex
+		ocrer := s.ocr
+		for i := 1; i <= pageCount; i++ {
+			if err := ctx.Err(); err != nil {
+				// Mark remaining pages as cancelled but keep order.
+				for j := i; j <= pageCount; j++ {
+					result.Pages[j-1] = Page{Number: j, Images: []ImageRef{}, Error: err.Error()}
 				}
+				break
 			}
-		}
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(pageNum int) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				page := Page{Number: pageNum, Images: []ImageRef{}}
+				if err := ctx.Err(); err != nil {
+					page.Error = err.Error()
+					result.Pages[pageNum-1] = page
+					return
+				}
+				// Serialize raw PDF access: ledongthuc/pdf shares the
+				// underlying file offset and is not goroutine-safe.
+				pdfMu.Lock()
+				p := reader.Page(pageNum)
+				isNull := p.V.IsNull()
+				var text string
+				var textErr error
+				if !isNull {
+					text, textErr = p.GetPlainText(nil)
+				}
+				pdfMu.Unlock()
 
-		result.Pages = append(result.Pages, page)
+				if isNull {
+					page.Error = fmt.Sprintf("page %d is missing from the document structure", pageNum)
+					result.Pages[pageNum-1] = page
+					return
+				}
+				if textErr != nil {
+					page.Error = textErr.Error()
+					result.Pages[pageNum-1] = page
+					return
+				}
+				page.Text = normalizeText(text)
+				page.NeedsOCR = needsOCR(page.Text)
+
+				// OCR fallback: only run on detected pages and only when an OCRer is
+				// configured. Failures skip gracefully — a missing or broken OCR
+				// setup never aborts extraction; such pages simply keep NeedsOCR set
+				// and whatever text was extracted.
+				if page.NeedsOCR && ocrer != nil {
+					if ocrText, err := ocrer.OCR(ctx, path, pageNum); err == nil {
+						if cleaned := normalizeText(ocrText); cleaned != "" {
+							page.Text = cleaned
+							page.NeedsOCR = false
+						}
+					}
+				}
+
+				result.Pages[pageNum-1] = page
+			}(i)
+		}
+		wg.Wait()
 	}
 
 	// Image extraction: preserve embedded images per page, record positions,
