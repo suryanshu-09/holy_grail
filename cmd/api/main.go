@@ -20,6 +20,7 @@ import (
 	"github.com/suryanshu-09/holy_grail/internal/jobs"
 	"github.com/suryanshu-09/holy_grail/internal/llm"
 	"github.com/suryanshu-09/holy_grail/internal/logging"
+	"github.com/suryanshu-09/holy_grail/internal/observability"
 	"github.com/suryanshu-09/holy_grail/internal/questions"
 	"github.com/suryanshu-09/holy_grail/internal/quiz"
 	"github.com/suryanshu-09/holy_grail/internal/search"
@@ -104,6 +105,9 @@ func main() {
 		logger.Error("failed to initialise extraction pipeline", "error", err)
 		os.Exit(1)
 	}
+	// Structured step logging (PLAN4 Phase 23): pipeline steps emit
+	// document_id/job_id/question_id/operation/duration/status/error.
+	extractionSvc = extractionSvc.WithStepLogger(observability.NewStepLogger(logger))
 	// Wire topic classifier: LLM when OPENAI_API_KEY set, otherwise heuristic fallback.
 	// Also wire LLM fallback for extraction when key is present (reuses same client).
 	var embeddingPipeline *embeddings.Service
@@ -116,6 +120,7 @@ func main() {
 			extractionSvc = extractionSvc.WithTopicClassifier(heuristic, topicRepo)
 			logger.Info("heuristic topic classifier enabled (OpenAI client creation failed)")
 		} else {
+			openai.SetAILogger(observability.NewAILogger(logger))
 			fallback := &extraction.LLMFallback{Client: openai, MaxPages: 3}
 			extractionSvc = extractionSvc.WithLLMFallback(fallback)
 			logger.Info("LLM fallback enabled for extraction")
@@ -132,6 +137,7 @@ func main() {
 		if vdesc, vErr := llm.NewOpenAIVisionDescriber(key, "", ""); vErr != nil {
 			logger.Warn("vision describer disabled", "error", vErr)
 		} else {
+			vdesc.SetAILogger(observability.NewAILogger(logger))
 			extractionSvc = extractionSvc.WithVisionDescriber(&openAIVisionAdapter{inner: vdesc})
 			logger.Info("vision describer enabled", "model", vdesc.Model)
 		}
@@ -139,6 +145,7 @@ func main() {
 		if embedErr != nil {
 			logger.Warn("embedding pipeline disabled", "error", embedErr)
 		} else {
+			embedder.SetAILogger(observability.NewAILogger(logger))
 			embeddingPipeline, embedErr = embeddings.NewService(questionRepo, topicRepo, embeddingRepo, embedder)
 			if embedErr != nil {
 				logger.Warn("embedding pipeline disabled", "error", embedErr)
@@ -169,6 +176,7 @@ func main() {
 	var keywordRepo search.KeywordRepository
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
 		if queryEmbedder, qErr := embeddings.NewOpenAIEmbedder(key, cfg.EmbeddingModel, ""); qErr == nil {
+			queryEmbedder.SetAILogger(observability.NewAILogger(logger))
 			repo := search.NewRepository(db, search.DefaultMetric, queryEmbedder.Model())
 			if svc, sErr := search.NewService(repo, queryEmbedder); sErr == nil {
 				searcher = svc

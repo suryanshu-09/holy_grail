@@ -8,17 +8,37 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/suryanshu-09/holy_grail/internal/observability"
+)
+
+// Prompt versions emitted in AI call logs (PLAN4 Phase 23). The version
+// identifies the prompt template, never prompt content (PII is never logged).
+const (
+	PromptVersionExtract  = "extract-v1"
+	PromptVersionClassify = "classify-v1"
+	PromptVersionQuiz     = "quiz-v1"
 )
 
 // OpenAIClient is a minimal OpenAI-compatible client implementing Client.
 // It is intentionally small: only the fields needed for ExtractQuestionsFromText
 // are implemented. The caller is responsible for providing a valid apiKey.
+//
+// AI is an optional AI call logger (nil disables logging). When set, every
+// call logs model, prompt version, token usage (when the provider returns a
+// usage block), latency and error via observability.AILogger. Prompt and
+// response bodies are never logged.
 type OpenAIClient struct {
 	APIKey  string
 	Model   string
 	BaseURL string
 	Client  *http.Client
+	// AI, when non-nil, receives one ai_call log per request.
+	AI *observability.AILogger
 }
+
+// SetAILogger attaches an AI call logger (nil disables logging).
+func (c *OpenAIClient) SetAILogger(l *observability.AILogger) { c.AI = l }
 
 // NewOpenAIClient constructs an OpenAIClient. If baseURL is empty the default
 // https://api.openai.com is used. If model is empty the default "gpt-3.5-turbo"
@@ -59,12 +79,99 @@ type chatResponse struct {
 	Object  string       `json:"object"`
 	Created int64        `json:"created"`
 	Choices []chatChoice `json:"choices"`
+	Usage   *chatUsage   `json:"usage,omitempty"`
+}
+
+// chatUsage mirrors the OpenAI usage block. All fields are optional: older
+// or compatible providers may omit usage entirely, in which case token
+// counts are logged as zero.
+type chatUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
+// usageTokens extracts (input, output) token counts from a usage block,
+// tolerating nil blocks and providers that only report total_tokens.
+func usageTokens(u *chatUsage) (in, out int) {
+	if u == nil {
+		return 0, 0
+	}
+	in, out = u.PromptTokens, u.CompletionTokens
+	if in == 0 && out == 0 && u.TotalTokens > 0 {
+		in = u.TotalTokens
+	}
+	return in, out
+}
+
+// logAI emits one ai_call observation when a logger is attached. It never
+// logs prompt or response content — only model, prompt version, tokens,
+// latency, operation and (sanitized) error.
+func (c *OpenAIClient) logAI(ctx context.Context, operation, promptVersion string, start time.Time, in, out int, err error) {
+	if c == nil || c.AI == nil {
+		return
+	}
+	model := ""
+	if c != nil {
+		model = c.Model
+	}
+	c.AI.Log(ctx, observability.AIEntry{
+		Model:         model,
+		PromptVersion: promptVersion,
+		InputTokens:   in,
+		OutputTokens:  out,
+		Latency:       time.Since(start),
+		Operation:     operation,
+		Err:           err,
+	})
+}
+
+// doChat posts a chat-completion request and returns the first choice
+// content plus token usage. It performs transport-level handling only;
+// callers validate the content and own the single AI log for the call.
+func (c *OpenAIClient) doChat(ctx context.Context, body chatRequest) (content string, in, out int, err error) {
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("openai: marshal request: %w", err)
+	}
+
+	url := c.BaseURL + "/v1/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, "POST", url, io.NopCloser(io.MultiReader(bytesNewReader(raw))))
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("openai: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+
+	httpClient := c.Client
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 15 * time.Second}
+	}
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("openai: request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		b, _ := io.ReadAll(resp.Body)
+		return "", 0, 0, fmt.Errorf("openai: status %d: %s", resp.StatusCode, string(b))
+	}
+	var decoded chatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		return "", 0, 0, fmt.Errorf("openai: decode: %w", err)
+	}
+	if len(decoded.Choices) == 0 {
+		return "", 0, 0, fmt.Errorf("openai: no choices in response")
+	}
+	in, out = usageTokens(decoded.Usage)
+	return decoded.Choices[0].Message.Content, in, out, nil
 }
 
 // ExtractQuestionsFromText sends a chat request with the prompt and returns
 // the model's text content (choices[0].message.content) as-is.
 func (c *OpenAIClient) ExtractQuestionsFromText(ctx context.Context, prompt string) (string, error) {
-	reqBody := chatRequest{
+	start := time.Now()
+	content, in, out, err := c.doChat(ctx, chatRequest{
 		Model: c.Model,
 		Messages: []chatMessage{
 			{Role: "system", Content: "You are a helpful JSON extractor. Return only the JSON array requested."},
@@ -72,37 +179,12 @@ func (c *OpenAIClient) ExtractQuestionsFromText(ctx context.Context, prompt stri
 		},
 		MaxTok: 1000,
 		Temp:   0.0,
-	}
-	raw, err := json.Marshal(reqBody)
+	})
+	c.logAI(ctx, "extract_questions", PromptVersionExtract, start, in, out, err)
 	if err != nil {
-		return "", fmt.Errorf("openai: marshal request: %w", err)
+		return "", err
 	}
-
-	url := c.BaseURL + "/v1/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, "POST", url, io.NopCloser(io.MultiReader(bytesNewReader(raw))))
-	if err != nil {
-		return "", fmt.Errorf("openai: create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.APIKey)
-
-	resp, err := c.Client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("openai: request: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("openai: status %d: %s", resp.StatusCode, string(b))
-	}
-	var out chatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", fmt.Errorf("openai: decode: %w", err)
-	}
-	if len(out.Choices) == 0 {
-		return "", fmt.Errorf("openai: no choices in response")
-	}
-	return out.Choices[0].Message.Content, nil
+	return content, nil
 }
 
 // ClassifyTopics sends a chat completion request for topic classification.
@@ -113,7 +195,8 @@ func (c *OpenAIClient) ExtractQuestionsFromText(ctx context.Context, prompt stri
 //     non-empty, confidence in [0,1], max 10 topics, no unknown fields.
 // On any validation failure it returns ErrInvalidResponse.
 func (c *OpenAIClient) ClassifyTopics(ctx context.Context, prompt string) (string, error) {
-	reqBody := chatRequest{
+	start := time.Now()
+	content, in, out, err := c.doChat(ctx, chatRequest{
 		Model: c.Model,
 		Messages: []chatMessage{
 			{Role: "system", Content: "You are a precise topic classifier. Return ONLY valid JSON matching {\"subject\": string, \"topics\": [{\"topic\": string, \"confidence\": 0.0-1.0, \"subject\": string}]} with no markdown, no extra text."},
@@ -121,36 +204,11 @@ func (c *OpenAIClient) ClassifyTopics(ctx context.Context, prompt string) (strin
 		},
 		MaxTok: 800,
 		Temp:   0.0,
-	}
-	raw, err := json.Marshal(reqBody)
+	})
 	if err != nil {
-		return "", fmt.Errorf("openai: marshal request: %w", err)
+		c.logAI(ctx, "classify_topics", PromptVersionClassify, start, in, out, err)
+		return "", err
 	}
-	url := c.BaseURL + "/v1/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, "POST", url, io.NopCloser(io.MultiReader(bytesNewReader(raw))))
-	if err != nil {
-		return "", fmt.Errorf("openai: create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.APIKey)
-
-	resp, err := c.Client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("openai: request: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("openai: status %d: %s", resp.StatusCode, string(b))
-	}
-	var out chatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", fmt.Errorf("openai: decode: %w", err)
-	}
-	if len(out.Choices) == 0 {
-		return "", fmt.Errorf("openai: no choices in response")
-	}
-	content := out.Choices[0].Message.Content
 
 	// Strict JSON extraction: markdown fence stripping + JSON object extraction.
 	cleaned := stripClassifyFences(content)
@@ -160,9 +218,12 @@ func (c *OpenAIClient) ClassifyTopics(ctx context.Context, prompt string) (strin
 	}
 	// Validate strictly before returning.
 	if err := validateClassificationJSON(cleaned); err != nil {
-		return "", fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+		err = fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+		c.logAI(ctx, "classify_topics", PromptVersionClassify, start, in, out, err)
+		return "", err
 	}
 	// Return canonical cleaned JSON (already validated).
+	c.logAI(ctx, "classify_topics", PromptVersionClassify, start, in, out, nil)
 	return cleaned, nil
 }
 
@@ -176,7 +237,8 @@ func (c *OpenAIClient) ClassifyTopics(ctx context.Context, prompt string) (strin
 //     no duplicates.
 // On any validation failure it returns ErrInvalidResponse.
 func (c *OpenAIClient) GenerateQuiz(ctx context.Context, prompt string) (string, error) {
-	reqBody := chatRequest{
+	start := time.Now()
+	content, in, out, err := c.doChat(ctx, chatRequest{
 		Model: c.Model,
 		Messages: []chatMessage{
 			{Role: "system", Content: "You are a precise quiz generator. Return ONLY valid JSON matching {\"questions\": [{\"id\": string, \"source_question_id\": string, \"document_id\": string, \"question\": string, \"options\": [string x4], \"correct_answer\": 0-3, \"explanation\": string}]} with no markdown, no extra text."},
@@ -184,36 +246,11 @@ func (c *OpenAIClient) GenerateQuiz(ctx context.Context, prompt string) (string,
 		},
 		MaxTok: 2000,
 		Temp:   0.0,
-	}
-	raw, err := json.Marshal(reqBody)
+	})
 	if err != nil {
-		return "", fmt.Errorf("openai: marshal request: %w", err)
+		c.logAI(ctx, "generate_quiz", PromptVersionQuiz, start, in, out, err)
+		return "", err
 	}
-	url := c.BaseURL + "/v1/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, "POST", url, io.NopCloser(io.MultiReader(bytesNewReader(raw))))
-	if err != nil {
-		return "", fmt.Errorf("openai: create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.APIKey)
-
-	resp, err := c.Client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("openai: request: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("openai: status %d: %s", resp.StatusCode, string(b))
-	}
-	var out chatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return "", fmt.Errorf("openai: decode: %w", err)
-	}
-	if len(out.Choices) == 0 {
-		return "", fmt.Errorf("openai: no choices in response")
-	}
-	content := out.Choices[0].Message.Content
 
 	// Strict JSON extraction: markdown fence stripping + JSON object extraction.
 	cleaned := stripQuizFences(content)
@@ -223,9 +260,12 @@ func (c *OpenAIClient) GenerateQuiz(ctx context.Context, prompt string) (string,
 	}
 	// Validate strictly before returning.
 	if err := validateQuizJSON(cleaned); err != nil {
-		return "", fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+		err = fmt.Errorf("%w: %v", ErrInvalidResponse, err)
+		c.logAI(ctx, "generate_quiz", PromptVersionQuiz, start, in, out, err)
+		return "", err
 	}
 	// Return canonical cleaned JSON (already validated).
+	c.logAI(ctx, "generate_quiz", PromptVersionQuiz, start, in, out, nil)
 	return cleaned, nil
 }
 

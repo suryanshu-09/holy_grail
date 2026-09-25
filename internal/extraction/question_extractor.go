@@ -1101,11 +1101,15 @@ func (s *ExtractionService) ExtractQuestions(ctx context.Context, de DocumentExt
 	if s.questionRepo == nil {
 		return fmt.Errorf("extraction: no questions repository configured")
 	}
+	base := s.stepBase(ctx, de.DocumentID)
+	finish := s.steps().Start(ctx, "question_extraction", base)
 	qs := parseQuestionsFromExtraction(de)
 	// Validate all before persisting to avoid partial writes
 	for i, pq := range qs {
 		if err := ValidateQuestion(pq); err != nil {
-			return fmt.Errorf("extraction: validate question %d: %w", i+1, err)
+			verr := fmt.Errorf("extraction: validate question %d: %w", i+1, err)
+			finish(verr, map[string]any{"questions": len(qs)})
+			return verr
 		}
 	}
 	extractDir := filepath.Join(s.root, documentLayout, de.DocumentID, extractionDirName)
@@ -1169,7 +1173,9 @@ func (s *ExtractionService) ExtractQuestions(ctx context.Context, de DocumentExt
 			}
 		}
 		if err := s.questionRepo.Insert(ctx, q); err != nil {
-			return fmt.Errorf("extraction: insert question: %w", err)
+			ierr := fmt.Errorf("extraction: insert question: %w", err)
+			finish(ierr, map[string]any{"questions": len(qs)})
+			return ierr
 		}
 		b, _ := json.MarshalIndent(pq, "", "  ")
 		_ = os.WriteFile(filepath.Join(debugDir, fmt.Sprintf("question-%03d.json", i+1)), b, 0o644)
@@ -1191,6 +1197,7 @@ func (s *ExtractionService) ExtractQuestions(ctx context.Context, de DocumentExt
 	if s.llmFallback != nil && len(qs) > 0 {
 		// log prompt hash if LLM was used (no-op if not)
 	}
+	finish(nil, map[string]any{"questions": len(qs)})
 	return nil
 }
 

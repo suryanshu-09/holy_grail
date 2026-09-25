@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/suryanshu-09/holy_grail/internal/observability"
 )
 
 // LogError logs an error using the default structured logger.
@@ -22,17 +24,38 @@ func (r *statusRecorder) WriteHeader(status int) {
 	r.ResponseWriter.WriteHeader(status)
 }
 
-// RequestLogging logs method, path, status and duration of each request.
+// RequestLogging logs each request with the PLAN4 Phase 23 structured field
+// names so HTTP logs join with pipeline/job step logs: document_id, job_id,
+// question_id, operation ("http_request"), duration (+ duration_s /
+// duration_ms), status ("success" for <400, "error" otherwise) and error.
+// Method, path and the numeric status_code ride along as extras; when the
+// request context carries correlation ids (see internal/observability
+// WithJobID/WithDocumentID/WithQuestionID) they are emitted too.
 func RequestLogging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
+		elapsed := time.Since(start)
+		status := "success"
+		errMsg := ""
+		if rec.status >= 400 {
+			status = "error"
+			errMsg = http.StatusText(rec.status)
+		}
 		slog.Info("request",
+			"document_id", observability.DocumentIDFromContext(r.Context()),
+			"job_id", observability.JobIDFromContext(r.Context()),
+			"question_id", observability.QuestionIDFromContext(r.Context()),
+			"operation", "http_request",
 			"method", r.Method,
 			"path", r.URL.Path,
-			"status", rec.status,
-			"duration", time.Since(start).String(),
+			"status", status,
+			"status_code", rec.status,
+			"duration", elapsed.String(),
+			"duration_s", elapsed.Seconds(),
+			"duration_ms", elapsed.Milliseconds(),
+			"error", errMsg,
 		)
 	})
 }

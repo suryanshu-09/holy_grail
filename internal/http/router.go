@@ -68,6 +68,11 @@ func NewRouter(cfg *config.AppConfig, deps RouterDeps) http.Handler {
 	mux.Handle("GET "+APIVersion+"/topics/{id}/questions", handleTopicQuestions(deps.Questions, deps.Topics))
 	mux.Handle(APIVersion+"/search", handleSearch(deps.Searcher, deps.HybridSearcher))
 	mux.Handle(APIVersion+"/debug/eval", handleDebugEval(deps.EvalRunner))
+	var retrievalTopics RetrievalTopicLister
+	if deps.Topics != nil {
+		retrievalTopics = deps.Topics
+	}
+	mux.Handle(APIVersion+"/debug/retrieval", handleDebugRetrieval(deps.Searcher, deps.HybridSearcher, retrievalTopics))
 	mux.Handle(APIVersion+"/quiz/generate", handleQuizGenerate(deps.Quiz))
 	mux.Handle("POST "+APIVersion+"/quiz/sessions", handleCreateQuizSession(deps.QuizEval))
 	mux.Handle("GET "+APIVersion+"/quiz/sessions", handleQuizHistory(deps.QuizHistory))

@@ -15,6 +15,7 @@ import (
 
 	"github.com/suryanshu-09/holy_grail/internal/documents"
 	"github.com/suryanshu-09/holy_grail/internal/embeddings"
+	"github.com/suryanshu-09/holy_grail/internal/observability"
 	"github.com/suryanshu-09/holy_grail/internal/questions"
 	"github.com/suryanshu-09/holy_grail/internal/topics"
 )
@@ -44,6 +45,7 @@ type ExtractionService struct {
 	topicRepo    topics.Repository
 	embeddings   *embeddings.Service
 	vision       VisionDescriber
+	stepLog      *observability.StepLogger
 }
 
 // WithLLMFallback attaches an LLM fallback to the extraction service.
@@ -98,6 +100,31 @@ func (s *ExtractionService) WithVisionDescriber(v VisionDescriber) *ExtractionSe
 	return s
 }
 
+// WithStepLogger attaches the structured step logger used for PLAN4 Phase 23
+// observability. A nil logger disables step logging (slog diagnostics still
+// apply). Job/document correlation is read from ctx via
+// observability.JobIDFromContext.
+func (s *ExtractionService) WithStepLogger(l *observability.StepLogger) *ExtractionService {
+	s.stepLog = l
+	return s
+}
+
+// steps returns the configured step logger, falling back to slog.Default().
+func (s *ExtractionService) steps() *observability.StepLogger {
+	if s != nil && s.stepLog != nil {
+		return s.stepLog
+	}
+	return observability.NewStepLogger(slog.Default())
+}
+
+// stepBase builds the correlation base for one document from ctx (job_id)
+// plus the explicit document id.
+func (s *ExtractionService) stepBase(ctx context.Context, documentID string) observability.StepEntry {
+	base := observability.BaseFromContext(ctx)
+	base.DocumentID = documentID
+	return base
+}
+
 // NewExtractionService resolves root (e.g. ./data) to an absolute path and
 // returns an extraction service that persists intermediates there.
 func NewExtractionService(root string, extractor *Service, repo documents.Repository, qrepo questions.Repository) (*ExtractionService, error) {
@@ -128,58 +155,111 @@ func NewExtractionService(root string, extractor *Service, repo documents.Reposi
 // saved before the status flips to extracted so a crash never advertises
 // extracted without artifacts on disk.
 func (s *ExtractionService) Extract(ctx context.Context, documentID, storagePath string) (DocumentExtraction, error) {
+	base := s.stepBase(ctx, documentID)
+	finishOverall := s.steps().Start(ctx, "document_extraction", base)
+	overallErr := error(nil)
+	questionCount := 0
+	defer func() {
+		extra := map[string]any{"questions": questionCount}
+		finishOverall(overallErr, extra)
+	}()
+
 	pdfPath, err := s.resolvePDF(documentID, storagePath)
 	if err != nil {
+		overallErr = err
 		return DocumentExtraction{}, err
 	}
 
+	finishPages := s.steps().Start(ctx, "page_extraction", base)
 	result, err := s.extractor.ExtractFile(ctx, documentID, pdfPath)
+	finishPages(err, map[string]any{"pages": len(result.Pages)})
 	if err != nil {
+		overallErr = err
 		return DocumentExtraction{}, s.markFailed(ctx, documentID, err)
 	}
 
 	// Vision descriptions are best-effort and non-fatal: describe extracted
 	// images after extractImages so pages.json/images.json manifests carry
 	// description + figure-type context. Failures are logged and skipped.
+	finishVision := s.steps().Start(ctx, "vision_describe", base)
 	s.describeImages(ctx, documentID, &result)
+	finishVision(nil, map[string]any{"pages": len(result.Pages)})
 
-	if err := s.saveResults(documentID, result); err != nil {
-		return DocumentExtraction{}, s.markFailed(ctx, documentID, err)
+	finishSave := s.steps().Start(ctx, "save_results", base)
+	saveErr := s.saveResults(documentID, result)
+	finishSave(saveErr, map[string]any{"pages": len(result.Pages)})
+	if saveErr != nil {
+		overallErr = saveErr
+		return DocumentExtraction{}, s.markFailed(ctx, documentID, saveErr)
 	}
 
 	// Run question extraction and persist detected questions. Failures in
 	// question persistence mark the document failed so they are visible to
 	// operators and can be retried.
 	if err := s.ExtractQuestions(ctx, result); err != nil {
+		overallErr = err
 		return DocumentExtraction{}, s.markFailed(ctx, documentID, err)
 	}
+	questionCount = s.countPersistedQuestions(ctx, documentID)
 
 	// Topic classification is non-fatal: log and continue on LLM failure.
 	if s.classifier != nil && s.topicRepo != nil {
 		if err := s.ClassifyDocument(ctx, documentID); err != nil {
-			slog.Warn("extraction: classification failed (non-fatal)", "document", documentID, "error", err)
+			slog.Warn("extraction: classification failed (non-fatal)", "document_id", documentID, "job_id", base.JobID, "error", err)
 		}
 	} else {
-		slog.Debug("extraction: classification skipped (no classifier or topic repo)", "document", documentID)
+		slog.Debug("extraction: classification skipped (no classifier or topic repo)", "document_id", documentID, "job_id", base.JobID)
 		// Still write empty classification artifact for observability
 		_ = s.writeClassificationArtifact(documentID, nil)
+		s.steps().Log(ctx, observability.StepEntry{
+			DocumentID: documentID, JobID: base.JobID,
+			Operation: "topic_classification", Status: observability.StatusSuccess,
+			Extra: map[string]any{"skipped": true},
+		})
 	}
 
 	if s.embeddings != nil {
+		finishEmbed := s.steps().Start(ctx, "embedding", base)
 		embeddingResult, err := s.embeddings.EmbedDocument(ctx, documentID)
 		if err != nil {
-			slog.Warn("extraction: embedding failed (non-fatal)", "document", documentID, "error", err)
-		} else if embeddingResult.Failed > 0 {
-			slog.Warn("extraction: embedding partially completed", "document", documentID, "failed", embeddingResult.Failed)
+			finishEmbed(err, nil)
+			slog.Warn("extraction: embedding failed (non-fatal)", "document_id", documentID, "job_id", base.JobID, "error", err)
+		} else {
+			finishEmbed(nil, map[string]any{"failed": embeddingResult.Failed})
+			if embeddingResult.Failed > 0 {
+				slog.Warn("extraction: embedding partially completed", "document_id", documentID, "job_id", base.JobID, "failed", embeddingResult.Failed)
+			}
 		}
 	} else {
-		slog.Debug("extraction: embeddings skipped (no embedder configured)", "document", documentID)
+		slog.Debug("extraction: embeddings skipped (no embedder configured)", "document_id", documentID, "job_id", base.JobID)
 	}
 
 	if err := s.repo.UpdateStatus(ctx, documentID, documents.StatusExtracted); err != nil {
-		return DocumentExtraction{}, fmt.Errorf("extraction: mark %q extracted: %w", documentID, err)
+		overallErr = fmt.Errorf("extraction: mark %q extracted: %w", documentID, err)
+		return DocumentExtraction{}, overallErr
 	}
 	return result, nil
+}
+
+// countPersistedQuestions returns the number of stored questions for a
+// document for step-log extras. Errors yield 0 (never fatal).
+func (s *ExtractionService) countPersistedQuestions(ctx context.Context, documentID string) int {
+	if s.questionRepo == nil {
+		return 0
+	}
+	n := 0
+	for offset := 0; ; {
+		batch, err := s.questionRepo.List(ctx, questions.Filter{DocumentID: documentID, Limit: 100, Offset: offset})
+		if err != nil || len(batch) == 0 {
+			break
+		}
+		n += len(batch)
+		if len(batch) < 100 {
+			break
+		}
+		offset += len(batch)
+	}
+	return n
 }
 
 // visionCacheFileName holds content-hash -> DescribeOutput entries so
@@ -219,7 +299,7 @@ func (s *ExtractionService) describeImages(ctx context.Context, documentID strin
 	for pi := range result.Pages {
 		for ii := range result.Pages[pi].Images {
 			if err := ctx.Err(); err != nil {
-				slog.Warn("extraction: vision describe stopped (context cancelled, non-fatal)", "document", documentID, "error", err)
+				slog.Warn("extraction: vision describe stopped (context cancelled, non-fatal)", "document_id", documentID, "error", err)
 				break
 			}
 			img := &result.Pages[pi].Images[ii]
@@ -249,7 +329,7 @@ func (s *ExtractionService) describeImages(ctx context.Context, documentID strin
 				Context: truncateRunes(firstNonEmpty(pageText[img.Page], result.Pages[pi].Text), 500),
 			})
 			if err != nil {
-				slog.Warn("extraction: vision describe failed (non-fatal)", "document", documentID, "image", img.Name, "error", err)
+				slog.Warn("extraction: vision describe failed (non-fatal)", "document_id", documentID, "image", img.Name, "error", err)
 				continue
 			}
 			out.FigureType = NormalizeFigureType(out.FigureType)
@@ -306,7 +386,7 @@ func (s *ExtractionService) saveVisionCache(documentID string, cache map[string]
 	}
 	dir := filepath.Join(s.root, documentLayout, documentID, extractionDirName)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		slog.Warn("extraction: create vision cache dir failed (non-fatal)", "document", documentID, "error", err)
+		slog.Warn("extraction: create vision cache dir failed (non-fatal)", "document_id", documentID, "error", err)
 		return
 	}
 	data, err := json.MarshalIndent(cache, "", "  ")
@@ -314,7 +394,7 @@ func (s *ExtractionService) saveVisionCache(documentID string, cache map[string]
 		return
 	}
 	if err := writeFileAtomic(filepath.Join(dir, visionCacheFileName), append(data, '\n')); err != nil {
-		slog.Warn("extraction: write vision cache failed (non-fatal)", "document", documentID, "error", err)
+		slog.Warn("extraction: write vision cache failed (non-fatal)", "document_id", documentID, "error", err)
 	}
 }
 
@@ -451,14 +531,24 @@ func (s *ExtractionService) ClassifyDocument(ctx context.Context, documentID str
 	if !safeSegment(documentID) {
 		return fmt.Errorf("extraction: unsafe document id %q", documentID)
 	}
+	base := s.stepBase(ctx, documentID)
+	finish := s.steps().Start(ctx, "topic_classification", base)
+	classifyErr := error(nil)
+	labeled := 0
+	defer func() {
+		finish(classifyErr, map[string]any{"labeled": labeled})
+	}()
 	if s.classifier == nil {
-		return fmt.Errorf("extraction: no classifier configured")
+		classifyErr = fmt.Errorf("extraction: no classifier configured")
+		return classifyErr
 	}
 	if s.topicRepo == nil {
-		return fmt.Errorf("extraction: no topic repo configured")
+		classifyErr = fmt.Errorf("extraction: no topic repo configured")
+		return classifyErr
 	}
 	if s.questionRepo == nil {
-		return fmt.Errorf("extraction: no questions repository configured")
+		classifyErr = fmt.Errorf("extraction: no questions repository configured")
+		return classifyErr
 	}
 
 	// Fetch questions for document. Paginate because List clamps limit to 100.
@@ -472,7 +562,8 @@ func (s *ExtractionService) ClassifyDocument(ctx context.Context, documentID str
 			Offset:     offset,
 		})
 		if err != nil {
-			return fmt.Errorf("extraction: list questions for classification: %w", err)
+			classifyErr = fmt.Errorf("extraction: list questions for classification: %w", err)
+			return classifyErr
 		}
 		if len(batch) == 0 {
 			break
@@ -485,8 +576,12 @@ func (s *ExtractionService) ClassifyDocument(ctx context.Context, documentID str
 	}
 
 	if len(allQuestions) == 0 {
-		slog.Info("extraction: no questions to classify", "document", documentID)
-		return s.writeClassificationArtifact(documentID, nil)
+		slog.Info("extraction: no questions to classify", "document_id", documentID, "job_id", base.JobID)
+		if werr := s.writeClassificationArtifact(documentID, nil); werr != nil {
+			classifyErr = werr
+			return classifyErr
+		}
+		return nil
 	}
 
 	var artifacts []ClassificationArtifact
@@ -565,7 +660,12 @@ func (s *ExtractionService) ClassifyDocument(ctx context.Context, documentID str
 
 	// Write debug artifact (non-fatal if fails)
 	if err := s.writeClassificationArtifact(documentID, artifacts); err != nil {
-		slog.Warn("extraction: write classification artifact failed", "document", documentID, "error", err)
+		slog.Warn("extraction: write classification artifact failed", "document_id", documentID, "job_id", base.JobID, "error", err)
+	}
+	for _, art := range artifacts {
+		if art.Error == "" {
+			labeled++
+		}
 	}
 
 	return nil

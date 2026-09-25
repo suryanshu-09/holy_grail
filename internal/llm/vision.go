@@ -11,6 +11,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/suryanshu-09/holy_grail/internal/observability"
 )
 
 // Figure-type labels for vision-based image classification. Values match
@@ -128,14 +130,45 @@ func BuildVisionPrompt(in VisionDescribeInput) string {
 	return b.String()
 }
 
+// Prompt version emitted in vision AI call logs (PLAN4 Phase 23). The
+// version identifies the prompt template; prompt content is never logged.
+const PromptVersionVision = "vision-describe-v1"
+
 // OpenAIVisionDescriber describes images via OpenAI chat completions with an
 // image_url (base64 data URL) part. It never panics; transport, auth, or
 // parse failures are returned as errors so the pipeline can skip vision.
+//
+// AI is an optional AI call logger (nil disables logging). When set, every
+// Describe call logs model, prompt version, token usage (when the provider
+// returns a usage block), latency and error. Prompt text and image bytes
+// are never logged.
 type OpenAIVisionDescriber struct {
 	APIKey  string
 	Model   string
 	BaseURL string
 	Client  *http.Client
+	// AI, when non-nil, receives one ai_call log per Describe call.
+	AI *observability.AILogger
+}
+
+// SetAILogger attaches an AI call logger (nil disables logging).
+func (d *OpenAIVisionDescriber) SetAILogger(l *observability.AILogger) { d.AI = l }
+
+// logAI emits one ai_call observation when a logger is attached. It never
+// logs prompt, context, or image content — only metadata.
+func (d *OpenAIVisionDescriber) logAI(ctx context.Context, start time.Time, in, out int, err error) {
+	if d == nil || d.AI == nil {
+		return
+	}
+	d.AI.Log(ctx, observability.AIEntry{
+		Model:         d.Model,
+		PromptVersion: PromptVersionVision,
+		InputTokens:   in,
+		OutputTokens:  out,
+		Latency:       time.Since(start),
+		Operation:     "describe_image",
+		Err:           err,
+	})
 }
 
 // NewOpenAIVisionDescriber constructs an OpenAIVisionDescriber. apiKey is
@@ -292,16 +325,24 @@ func parseVisionJSON(s, model string) (VisionDescribeOutput, error) {
 
 // Describe sends one chat-completion request with a base64 image_url part and
 // returns the parsed description plus normalized figure-type classification.
+// Exactly one ai_call log is emitted per call (when a logger is attached),
+// carrying model, prompt version, token usage when available, latency and
+// error. Prompt text, page context and image bytes are never logged.
 func (d *OpenAIVisionDescriber) Describe(ctx context.Context, in VisionDescribeInput) (VisionDescribeOutput, error) {
+	start := time.Now()
 	if d == nil {
 		return VisionDescribeOutput{FigureType: VisionFigureUnknown, DescribedBy: "noop"}, fmt.Errorf("openai vision: nil describer")
 	}
+	fail := func(out VisionDescribeOutput, inTok, outTok int, err error) (VisionDescribeOutput, error) {
+		d.logAI(ctx, start, inTok, outTok, err)
+		return out, err
+	}
 	if strings.TrimSpace(d.APIKey) == "" {
-		return VisionDescribeOutput{FigureType: VisionFigureUnknown}, fmt.Errorf("openai vision: api key required")
+		return fail(VisionDescribeOutput{FigureType: VisionFigureUnknown}, 0, 0, fmt.Errorf("openai vision: api key required"))
 	}
 	data, err := loadVisionBytes(in)
 	if err != nil {
-		return VisionDescribeOutput{FigureType: VisionFigureUnknown}, err
+		return fail(VisionDescribeOutput{FigureType: VisionFigureUnknown}, 0, 0, err)
 	}
 	prompt := BuildVisionPrompt(in)
 	reqBody := visionChatRequest{
@@ -320,11 +361,11 @@ func (d *OpenAIVisionDescriber) Describe(ctx context.Context, in VisionDescribeI
 	}
 	raw, err := json.Marshal(reqBody)
 	if err != nil {
-		return VisionDescribeOutput{FigureType: VisionFigureUnknown}, fmt.Errorf("openai vision: marshal request: %w", err)
+		return fail(VisionDescribeOutput{FigureType: VisionFigureUnknown}, 0, 0, fmt.Errorf("openai vision: marshal request: %w", err))
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.BaseURL+"/v1/chat/completions", bytes.NewReader(raw))
 	if err != nil {
-		return VisionDescribeOutput{FigureType: VisionFigureUnknown}, fmt.Errorf("openai vision: create request: %w", err)
+		return fail(VisionDescribeOutput{FigureType: VisionFigureUnknown}, 0, 0, fmt.Errorf("openai vision: create request: %w", err))
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+d.APIKey)
@@ -335,23 +376,25 @@ func (d *OpenAIVisionDescriber) Describe(ctx context.Context, in VisionDescribeI
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return VisionDescribeOutput{FigureType: VisionFigureUnknown}, fmt.Errorf("openai vision: request: %w", err)
+		return fail(VisionDescribeOutput{FigureType: VisionFigureUnknown}, 0, 0, fmt.Errorf("openai vision: request: %w", err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-		return VisionDescribeOutput{FigureType: VisionFigureUnknown}, fmt.Errorf("openai vision: status %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		return fail(VisionDescribeOutput{FigureType: VisionFigureUnknown}, 0, 0, fmt.Errorf("openai vision: status %d: %s", resp.StatusCode, strings.TrimSpace(string(b))))
 	}
 	var out chatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return VisionDescribeOutput{FigureType: VisionFigureUnknown}, fmt.Errorf("openai vision: decode: %w", err)
+		return fail(VisionDescribeOutput{FigureType: VisionFigureUnknown}, 0, 0, fmt.Errorf("openai vision: decode: %w", err))
 	}
 	if len(out.Choices) == 0 {
-		return VisionDescribeOutput{FigureType: VisionFigureUnknown}, fmt.Errorf("openai vision: no choices in response")
+		return fail(VisionDescribeOutput{FigureType: VisionFigureUnknown}, 0, 0, fmt.Errorf("openai vision: no choices in response"))
 	}
+	inTok, outTok := usageTokens(out.Usage)
 	parsed, err := parseVisionJSON(out.Choices[0].Message.Content, d.Model)
 	if err != nil {
-		return VisionDescribeOutput{FigureType: VisionFigureUnknown, DescribedBy: d.Model}, err
+		return fail(VisionDescribeOutput{FigureType: VisionFigureUnknown, DescribedBy: d.Model}, inTok, outTok, err)
 	}
+	d.logAI(ctx, start, inTok, outTok, nil)
 	return parsed, nil
 }

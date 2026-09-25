@@ -550,6 +550,75 @@ export async function getDebugEval(): Promise<DebugEvalResponse> {
   return request<DebugEvalResponse>(buildUrl('/debug/eval', {}));
 }
 
+// Phase 23 single-query retrieval debugger (GET/POST /api/v1/debug/retrieval).
+// Returns slim id/score/topic hits for a single query (q/query, limit, mode).
+export type DebugRetrievalMode = 'vector' | 'keyword' | 'hybrid';
+
+export interface DebugRetrievalItem {
+  id: string;
+  score: number;
+  topic: string;
+}
+
+export interface DebugRetrievalResponse {
+  query: string;
+  mode: string;
+  limit: number;
+  count: number;
+  results: DebugRetrievalItem[];
+}
+
+export interface DebugRetrievalFilters {
+  limit?: number;
+  mode?: DebugRetrievalMode;
+}
+
+function parseDebugRetrievalError(status: number, statusText: string, body: string): Error {
+  try {
+    const parsed = JSON.parse(body) as ApiErrorBody;
+    if (parsed.error?.message) {
+      return new Error(parsed.error.message);
+    }
+  } catch {
+    // Fall through to generic message below.
+  }
+  return new Error(`Debug retrieval failed: ${status} ${statusText || 'Unknown error'}`);
+}
+
+export async function debugRetrieval(
+  query: string,
+  filters?: DebugRetrievalFilters
+): Promise<DebugRetrievalResponse> {
+  if (!query || !query.trim()) throw new Error('query is required');
+  const res = await fetch(
+    buildUrl('/debug/retrieval', {
+      q: query,
+      limit: filters?.limit,
+      mode: filters?.mode,
+    })
+  );
+  if (!res.ok) {
+    throw parseDebugRetrievalError(res.status, res.statusText, await res.text());
+  }
+  return (await res.json()) as DebugRetrievalResponse;
+}
+
+export async function debugRetrievalPost(
+  query: string,
+  filters?: DebugRetrievalFilters
+): Promise<DebugRetrievalResponse> {
+  if (!query || !query.trim()) throw new Error('query is required');
+  const res = await fetch(`${BASE_URL}/debug/retrieval`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, limit: filters?.limit, mode: filters?.mode }),
+  });
+  if (!res.ok) {
+    throw parseDebugRetrievalError(res.status, res.statusText, await res.text());
+  }
+  return (await res.json()) as DebugRetrievalResponse;
+}
+
 function parseQuizError(status: number, statusText: string, body: string): Error {
   try {
     const parsed = JSON.parse(body) as ApiErrorBody;

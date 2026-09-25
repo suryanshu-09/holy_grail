@@ -29,6 +29,7 @@ import (
 	"github.com/suryanshu-09/holy_grail/internal/jobs"
 	"github.com/suryanshu-09/holy_grail/internal/llm"
 	"github.com/suryanshu-09/holy_grail/internal/logging"
+	"github.com/suryanshu-09/holy_grail/internal/observability"
 	"github.com/suryanshu-09/holy_grail/internal/questions"
 	"github.com/suryanshu-09/holy_grail/internal/topics"
 )
@@ -164,12 +165,26 @@ func (p *extractionProcessor) report(ctx context.Context, rep jobs.ProgressFunc,
 	}
 }
 
+// withStepCorrelation injects the job and document ids into ctx so the
+// extraction pipeline's structured step logs (PLAN4 Phase 23 field names)
+// correlate with the jobs runner logs.
+func withStepCorrelation(ctx context.Context, job jobs.Job, documentID string) context.Context {
+	ctx = observability.WithJobID(ctx, job.ID)
+	if documentID != "" {
+		ctx = observability.WithDocumentID(ctx, documentID)
+	} else if job.DocumentID != nil && *job.DocumentID != "" {
+		ctx = observability.WithDocumentID(ctx, *job.DocumentID)
+	}
+	return ctx
+}
+
 // ProcessDocument runs the full pipeline for one document.
 func (p *extractionProcessor) ProcessDocument(ctx context.Context, job jobs.Job, rep jobs.ProgressFunc) error {
 	documentID, storagePath, err := p.resolveDocument(ctx, job)
 	if err != nil {
 		return err
 	}
+	ctx = withStepCorrelation(ctx, job, documentID)
 	p.report(ctx, rep, job, int(jobs.ProgressForStep(jobs.StepUploaded)), jobs.StepUploaded)
 	p.report(ctx, rep, job, int(jobs.ProgressForStep(jobs.StepExtracting)), jobs.StepExtracting)
 	if _, err := p.pipeline.Extract(ctx, documentID, storagePath); err != nil {
@@ -190,6 +205,7 @@ func (p *extractionProcessor) ExtractQuestions(ctx context.Context, job jobs.Job
 	if err != nil {
 		return err
 	}
+	ctx = withStepCorrelation(ctx, job, documentID)
 	p.report(ctx, rep, job, int(jobs.ProgressForStep(jobs.StepExtracting)), jobs.StepExtracting)
 	pdfPath, err := p.pdfPath(documentID, storagePath)
 	if err != nil {
@@ -212,6 +228,7 @@ func (p *extractionProcessor) ClassifyQuestions(ctx context.Context, job jobs.Jo
 	if err != nil {
 		return err
 	}
+	ctx = withStepCorrelation(ctx, job, documentID)
 	p.report(ctx, rep, job, int(jobs.ProgressForStep(jobs.StepClassifying)), jobs.StepClassifying)
 	if err := p.pipeline.ClassifyDocument(ctx, documentID); err != nil {
 		return fmt.Errorf("worker: classify questions: %w", err)
@@ -227,6 +244,7 @@ func (p *extractionProcessor) GenerateEmbeddings(ctx context.Context, job jobs.J
 	if err != nil {
 		return err
 	}
+	ctx = withStepCorrelation(ctx, job, documentID)
 	p.report(ctx, rep, job, int(jobs.ProgressForStep(jobs.StepEmbeddings)), jobs.StepEmbeddings)
 	if p.embeddings == nil {
 		p.log().Warn("worker: embeddings skipped (no embedder configured)",
@@ -347,6 +365,10 @@ func main() {
 		logger.Error("worker: failed to initialise extraction pipeline", "error", err)
 		os.Exit(1)
 	}
+	// Structured step logging (PLAN4 Phase 23): pipeline steps emit
+	// document_id/job_id/question_id/operation/duration/status/error with
+	// job correlation supplied per-execution via context.
+	extractionSvc = extractionSvc.WithStepLogger(observability.NewStepLogger(logger))
 
 	// Wire the classifier, LLM fallback, vision describer, and embedding
 	// pipeline exactly like cmd/api so worker output matches inline output.
@@ -358,6 +380,7 @@ func main() {
 			extractionSvc = extractionSvc.WithTopicClassifier(topics.NewHeuristicClassifier(), topicRepo)
 			logger.Info("worker: heuristic topic classifier enabled (OpenAI client creation failed)")
 		} else {
+			openai.SetAILogger(observability.NewAILogger(logger))
 			extractionSvc = extractionSvc.WithLLMFallback(&extraction.LLMFallback{Client: openai, MaxPages: 3})
 			logger.Info("worker: LLM fallback enabled for extraction")
 			extractionSvc = extractionSvc.WithTopicClassifier(topics.NewClassifier(openai, 3, 100*time.Millisecond), topicRepo)
@@ -366,18 +389,22 @@ func main() {
 		if vdesc, vErr := llm.NewOpenAIVisionDescriber(key, "", ""); vErr != nil {
 			logger.Warn("worker: vision describer disabled", "error", vErr)
 		} else {
+			vdesc.SetAILogger(observability.NewAILogger(logger))
 			extractionSvc = extractionSvc.WithVisionDescriber(&openAIVisionAdapter{inner: vdesc})
 			logger.Info("worker: vision describer enabled", "model", vdesc.Model)
 		}
 		if embedder, embedErr := embeddings.NewOpenAIEmbedder(key, cfg.EmbeddingModel, ""); embedErr != nil {
 			logger.Warn("worker: embedding pipeline disabled", "error", embedErr)
-		} else if svc, sErr := embeddings.NewService(questionRepo, topicRepo, embeddingRepo, embedder); sErr != nil {
-			logger.Warn("worker: embedding pipeline disabled", "error", sErr)
 		} else {
-			svc.BatchSize = cfg.EmbeddingBatchSize
-			embeddingPipeline = svc
-			extractionSvc = extractionSvc.WithEmbeddingPipeline(svc)
-			logger.Info("worker: OpenAI embedding pipeline enabled", "model", embedder.Model())
+			embedder.SetAILogger(observability.NewAILogger(logger))
+			if svc, sErr := embeddings.NewService(questionRepo, topicRepo, embeddingRepo, embedder); sErr != nil {
+				logger.Warn("worker: embedding pipeline disabled", "error", sErr)
+			} else {
+				svc.BatchSize = cfg.EmbeddingBatchSize
+				embeddingPipeline = svc
+				extractionSvc = extractionSvc.WithEmbeddingPipeline(svc)
+				logger.Info("worker: OpenAI embedding pipeline enabled", "model", embedder.Model())
+			}
 		}
 	} else {
 		extractionSvc = extractionSvc.WithTopicClassifier(topics.NewHeuristicClassifier(), topicRepo)

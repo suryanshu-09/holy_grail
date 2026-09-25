@@ -604,6 +604,21 @@ This will be extremely useful.
 
 ---
 
+## Tasks
+
+- [x] Structured step logging (document_id/job_id/question_id/operation/duration/status/error)
+- [x] AI logging (model/prompt version/tokens/latency/error, no private data)
+- [x] Retrieval debugging endpoint (`/debug/retrieval`)
+- [x] Retrieval debugging page
+
+---
+
+Completed: 2026-09-25
+
+Verified: `internal/observability/observability.go` adds `StepLogger`/`AILogger` (step fields document_id/job_id/question_id/operation/duration/status/error with `Start` timing helper; AI fields model/prompt version/input+output/total tokens/latency/error with no prompt/response content plus error sanitization/email redaction) with context correlation helpers, wired into extraction pipeline steps, jobs runner steps, LLM/embeddings/vision AI calls and HTTP request middleware; `internal/http/debug_retrieval.go` exposes `GET/POST /api/v1/debug/retrieval` (q/query, limit 1..100 default 10, mode vector/keyword/hybrid, `{id,score,topic}` hits with primary topic name, 400/405/503 handling) wired via `internal/http/router.go` and `cmd/api/main.go` (nil-safe); `lib/api.ts` adds `DebugRetrievalMode`/`DebugRetrievalItem`/`DebugRetrievalResponse` plus `debugRetrieval()`/`debugRetrievalPost()`; `pages/debug/retrieval.tsx` adds the debugger page (query/mode/limit form, Q/score/topic hits); unit tests cover observability, AI logging and the handler; `go vet ./...`, `go test ./...` and `npm run build` pass.
+
+---
+
 # 29. Phase 24 — Performance
 
 Only optimize after correctness.

@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/suryanshu-09/holy_grail/internal/observability"
 )
 
 // ProgressFunc reports pipeline progress for a running job. The Runner wires
@@ -97,10 +99,18 @@ func executionsFor(job Job) int {
 // Runner executes claimed jobs through a Processor with timeout context,
 // progress callbacks, retry with backoff, and structured logging. It is safe
 // for concurrent use by multiple workers sharing one Store.
+//
+// Lifecycle events (skip/start/completion/failure) are emitted through a
+// structured step log using the PLAN4 Phase 23 field names (document_id,
+// job_id, question_id, operation, duration, status, error) so job logs join
+// with extraction pipeline step logs. The job id (and document id when set)
+// is also injected into the execution context so downstream processors such
+// as the extraction pipeline correlate their own step logs automatically.
 type Runner struct {
 	store        Store
 	processor    Processor
 	logger       *slog.Logger
+	steps        *observability.StepLogger
 	retryBackoff time.Duration
 	pollInterval time.Duration
 }
@@ -114,9 +124,19 @@ func NewRunner(store Store, processor Processor, logger *slog.Logger) *Runner {
 		store:        store,
 		processor:    processor,
 		logger:       logger,
+		steps:        observability.NewStepLogger(logger),
 		retryBackoff: defaultRetryBackoff,
 		pollInterval: defaultPollInterval,
 	}
+}
+
+// WithStepLogger overrides the structured step logger used for job
+// lifecycle events. A nil logger is ignored.
+func (r *Runner) WithStepLogger(l *observability.StepLogger) *Runner {
+	if l != nil {
+		r.steps = l
+	}
+	return r
 }
 
 // WithRetryBackoff sets the base delay between inline retry attempts.
@@ -140,6 +160,24 @@ func (r *Runner) log() *slog.Logger {
 		return slog.Default()
 	}
 	return r.logger
+}
+
+// stepLog returns the structured step logger, falling back to slog.Default().
+func (r *Runner) stepLog() *observability.StepLogger {
+	if r != nil && r.steps != nil {
+		return r.steps
+	}
+	return observability.NewStepLogger(slog.Default())
+}
+
+// withCorrelation injects the job (and document, when set) ids into ctx so
+// downstream processors emit step logs with the same field names.
+func withCorrelation(ctx context.Context, job Job) context.Context {
+	ctx = observability.WithJobID(ctx, job.ID)
+	if doc := docIDValue(job); doc != "" {
+		ctx = observability.WithDocumentID(ctx, doc)
+	}
+	return ctx
 }
 
 // docIDValue extracts the document id for log fields (empty when unset).
@@ -187,6 +225,13 @@ func (r *Runner) Run(ctx context.Context, job Job) error {
 				"job_id", job.ID,
 				"document_id", docIDValue(job),
 				"operation", string(job.Type))
+			r.stepLog().Log(ctx, observability.StepEntry{
+				DocumentID: docIDValue(job),
+				JobID:      job.ID,
+				Operation:  string(job.Type),
+				Status:     observability.StatusSuccess,
+				Extra:      map[string]any{"skipped": "not_claimable"},
+			})
 			return nil
 		}
 		return err
@@ -208,6 +253,13 @@ func (r *Runner) RunByID(ctx context.Context, jobID string) error {
 			"document_id", docIDValue(job),
 			"operation", string(job.Type),
 			"status", string(job.Status))
+		r.stepLog().Log(ctx, observability.StepEntry{
+			DocumentID: docIDValue(job),
+			JobID:      job.ID,
+			Operation:  string(job.Type),
+			Status:     observability.StatusSuccess,
+			Extra:      map[string]any{"skipped": "terminal", "job_status": string(job.Status)},
+		})
 		return nil
 	}
 	return r.Run(ctx, job)
@@ -226,6 +278,16 @@ func (r *Runner) runClaimed(ctx context.Context, job Job) error {
 	timeout := timeoutFor(job)
 	executions := executionsFor(job)
 	logger.Info("job started", "attempt", job.Attempts, "timeout", timeout.String())
+	r.stepLog().Log(ctx, observability.StepEntry{
+		DocumentID: docIDValue(job),
+		JobID:      job.ID,
+		Operation:  string(job.Type),
+		Status:     observability.StatusSuccess,
+		Extra:      map[string]any{"event": "started", "attempt": job.Attempts},
+	})
+	// Correlate downstream processor step logs (extraction pipeline) with
+	// this job.
+	ctx = withCorrelation(ctx, job)
 
 	var lastErr error
 	for attempt := 0; attempt < executions; attempt++ {
@@ -240,14 +302,27 @@ func (r *Runner) runClaimed(ctx context.Context, job Job) error {
 		cancel()
 		if err == nil {
 			r.markCompleted(ctx, logger, job)
-			logger.Info("job completed", "duration", time.Since(start).String())
+			elapsed := time.Since(start)
+			logger.Info("job completed",
+				"duration", elapsed.String(),
+				"duration_ms", elapsed.Milliseconds(),
+				"status", observability.StatusSuccess)
+			r.stepLog().Log(ctx, observability.StepEntry{
+				DocumentID: docIDValue(job),
+				JobID:      job.ID,
+				Operation:  string(job.Type),
+				Duration:   elapsed,
+				Status:     observability.StatusSuccess,
+			})
 			return nil
 		}
 		lastErr = err
 		logger.Warn("job attempt failed",
 			"attempt", attempt+1,
-			"error", err.Error(),
-			"duration", duration.String())
+			"error", observability.SanitizeError(err),
+			"duration", duration.String(),
+			"duration_ms", duration.Milliseconds(),
+			"status", observability.StatusError)
 		if attempt < executions-1 {
 			backoff := BackoffForAttempt(r.retryBackoff, attempt)
 			logger.Info("job retrying", "attempt", attempt+2, "backoff", backoff.String())
@@ -267,9 +342,22 @@ func (r *Runner) runClaimed(ctx context.Context, job Job) error {
 		msg = lastErr.Error()
 	}
 	if _, uerr := r.store.UpdateStatus(ctx, job.ID, StatusFailed, msg); uerr != nil {
-		logger.Error("job failed to record failure status", "error", uerr.Error())
+		logger.Error("job failed to record failure status", "error", observability.SanitizeError(uerr))
 	}
-	logger.Error("job failed", "error", msg, "duration", time.Since(start).String())
+	elapsed := time.Since(start)
+	logger.Error("job failed",
+		"error", observability.SanitizeError(lastErr),
+		"duration", elapsed.String(),
+		"duration_ms", elapsed.Milliseconds(),
+		"status", observability.StatusError)
+	r.stepLog().Log(ctx, observability.StepEntry{
+		DocumentID: docIDValue(job),
+		JobID:      job.ID,
+		Operation:  string(job.Type),
+		Duration:   elapsed,
+		Status:     observability.StatusError,
+		Err:        lastErr,
+	})
 	return lastErr
 }
 
@@ -277,7 +365,7 @@ func (r *Runner) runClaimed(ctx context.Context, job Job) error {
 // (preserving the last reported step) so the UI progress bar finishes.
 func (r *Runner) markCompleted(ctx context.Context, logger *slog.Logger, job Job) {
 	if _, err := r.store.UpdateStatus(ctx, job.ID, StatusCompleted, ""); err != nil {
-		logger.Error("job failed to record completion", "error", err.Error())
+		logger.Error("job failed to record completion", "error", observability.SanitizeError(err))
 		return
 	}
 	step := StepEmbeddings
@@ -290,7 +378,7 @@ func (r *Runner) markCompleted(ctx context.Context, logger *slog.Logger, job Job
 		}
 	}
 	if _, err := r.store.UpdateProgress(ctx, job.ID, 100, step); err != nil {
-		logger.Warn("job failed to record final progress", "error", err.Error())
+		logger.Warn("job failed to record final progress", "error", observability.SanitizeError(err))
 	}
 }
 
