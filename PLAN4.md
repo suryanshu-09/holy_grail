@@ -701,14 +701,14 @@ minimal runtime image
 
 Tasks:
 
-- [ ] Multi-stage build
-- [ ] Build static binary
-- [ ] Minimal runtime image
-- [ ] Non-root user
-- [ ] No unnecessary packages
-- [ ] Proper signal handling
-- [ ] Healthcheck
-- [ ] Environment-based configuration
+- [x] Multi-stage build
+- [x] Build static binary
+- [x] Minimal runtime image
+- [x] Non-root user
+- [x] No unnecessary packages
+- [x] Proper signal handling
+- [x] Healthcheck
+- [x] Environment-based configuration
 
 ---
 
@@ -718,12 +718,12 @@ Build Next.js separately.
 
 Tasks:
 
-- [ ] Multi-stage build
-- [ ] Production dependencies only
-- [ ] Next.js standalone output if appropriate
-- [ ] Non-root runtime
-- [ ] Environment configuration
-- [ ] Healthcheck
+- [x] Multi-stage build
+- [x] Production dependencies only
+- [x] Next.js standalone output if appropriate
+- [x] Non-root runtime
+- [x] Environment configuration
+- [x] Healthcheck
 
 ---
 
@@ -738,10 +738,10 @@ worker/
 
 Tasks:
 
-- [ ] Production Go build
-- [ ] Minimal image
-- [ ] Non-root user
-- [ ] Environment configuration
+- [x] Production Go build
+- [x] Minimal image
+- [x] Non-root user
+- [x] Environment configuration
 
 ---
 
@@ -789,23 +789,29 @@ Example conceptual dependency graph:
 
 # 30.5 Docker Production Checklist
 
-- [ ] Multi-stage builds
-- [ ] `.dockerignore`
-- [ ] Minimal images
-- [ ] Non-root containers
-- [ ] Healthchecks
-- [ ] Proper container networking
-- [ ] Environment variables
-- [ ] Secrets not committed
-- [ ] Persistent PostgreSQL volume
-- [ ] Redis persistence strategy if needed
-- [ ] Graceful shutdown
-- [ ] Restart policies
-- [ ] Resource limits
-- [ ] Log handling
-- [ ] API healthcheck
-- [ ] Frontend healthcheck
-- [ ] Worker healthcheck
+- [x] Multi-stage builds
+- [x] `.dockerignore`
+- [x] Minimal images
+- [x] Non-root containers
+- [x] Healthchecks
+- [x] Proper container networking
+- [x] Environment variables
+- [x] Secrets not committed
+- [x] Persistent PostgreSQL volume
+- [x] Redis persistence strategy if needed
+- [x] Graceful shutdown
+- [x] Restart policies
+- [x] Resource limits
+- [x] Log handling
+- [x] API healthcheck
+- [x] Frontend healthcheck
+- [x] Worker healthcheck
+
+---
+
+Completed: 2026-09-26
+
+Verified: `Dockerfile.api` (§30.1: golang:1.26-alpine builder with `CGO_ENABLED=0` static `-trimpath -ldflags="-s -w"` binary, alpine:3.20 runtime with only ca-certificates+wget, `appuser` non-root, exec-form ENTRYPOINT preserving SIGTERM for cmd/api graceful shutdown, GET-based HEALTHCHECK on `/api/v1/health`, all config via env with `HOST=0.0.0.0` default); `Dockerfile.web` (§30.2: node:20-alpine builder with `npm ci` + production build, `next.config.js` `output:'standalone'`, runtime ships only `.next/standalone`+`.next/static` as `appuser`, `NEXT_PUBLIC_API_URL` build arg, HEALTHCHECK on `/`); `Dockerfile.worker` (§30.3: same Go minimal/non-root pattern for `./cmd/worker`, process-liveness HEALTHCHECK since the worker exposes no HTTP); `docker-compose.yml` (§30.4: postgres+redis+api+worker+web on explicit `app` bridge network, `depends_on` healthy conditions matching the dependency graph, shared `app_data` volume, persistent `db_data`, redis `--appendonly yes`, `${VAR:-default}` env interpolation with secrets via environment only, `restart: unless-stopped`, `stop_grace_period: 30s`, per-service CPU/memory limits, json-file log rotation); `Makefile` gains `prod-build`/`prod-up`/`prod-down`, `.env.example` documents the new knobs; smoke-tested end-to-end via `docker compose up -d` (all 5 services healthy, `GET /api/v1/health` → `{"status":"ok"}`, `/ready` → ready, `/documents` serves rows, web `/` → 200); `go vet ./...`, `go test ./... -count=1` (all packages ok), `npm test -- --run` (6 files, 28 tests passed) and `npm run build` (standalone `server.js` emitted) pass.
 
 ---
 

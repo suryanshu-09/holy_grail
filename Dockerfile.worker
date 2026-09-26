@@ -1,0 +1,38 @@
+# Background worker image (PLAN4 Phase 25 §30.3).
+# Multi-stage: Go builder -> minimal Alpine runtime, non-root, static binary.
+# Build:   docker build -f Dockerfile.worker -t holy-grail-worker .
+# Run env: DATABASE_URL=... REDIS_ADDR=redis:6379 APP_ENV=production
+# The worker has no HTTP endpoint; HEALTHCHECK asserts the process is alive.
+
+# ---- builder ----
+FROM golang:1.26-alpine AS builder
+WORKDIR /src
+# Cache module downloads separately from source changes.
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd/ ./cmd/
+COPY internal/ ./internal/
+COPY migrations/ ./migrations/
+# Static binary for a libc-free runtime; trimpath strips host paths.
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/worker ./cmd/worker
+
+# ---- runtime ----
+FROM alpine:3.20 AS runtime
+# ca-certificates: outbound TLS (OpenAI, Postgres). tesseract/poppler
+# intentionally omitted: OCR degrades gracefully to a logged warning
+# (see NewTesseractOCR callers) to keep the image minimal.
+RUN apk add --no-cache ca-certificates \
+    && addgroup -S appgroup && adduser -S appuser -G appgroup
+WORKDIR /app
+COPY --from=builder /out/worker /app/worker
+# Writable file-storage root for the non-root user (STORAGE_PATH).
+RUN mkdir -p /app/data && chown -R appuser:appgroup /app
+USER appuser
+ENV APP_ENV=production \
+    STORAGE_PATH=/app/data
+# Exec form preserves SIGTERM so cmd/worker's signal-aware shutdown runs.
+ENTRYPOINT ["/app/worker"]
+# No HTTP server in the worker: fail the check if the process is gone.
+# BusyBox ps is always present on Alpine; the [w] trick avoids matching grep.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD ps | grep -q "[w]orker" || exit 1

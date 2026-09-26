@@ -1,28 +1,75 @@
-version: '3.8'
+# Final production stack (PLAN4 Phase 25 §30.4):
+#
+#   docker compose
+#   ├── postgres (db)
+#   ├── redis
+#   ├── api
+#   ├── worker
+#   └── web
+#
+# Dependency graph:
+#                  ┌────────────┐
+#                  │    web     │
+#                  └─────┬──────┘
+#                        │
+#                        ▼
+#                  ┌────────────┐
+#                  │    api     │
+#                  └──┬─────┬───┘
+#                     │     │
+#                     ▼     ▼
+#               PostgreSQL  Redis
+#                            │
+#                            ▼
+#                         Worker
+#
+# Usage:
+#   docker compose up --build -d        # full stack
+#   docker compose up -d db redis       # local infra only (see `make db-up`)
+#   docker compose exec -T db ...       # migrations via `make db-migrate`
+#
+# Secrets (OPENAI_API_KEY, POSTGRES_PASSWORD) are injected via environment,
+# never committed (.env is git-ignored; see .env.example).
 
 services:
   db:
     image: ankane/pgvector:latest
     environment:
-      POSTGRES_USER: pguser
-      POSTGRES_PASSWORD: pgpass
-      POSTGRES_DB: holygrail_dev
+      POSTGRES_USER: ${POSTGRES_USER:-pguser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pgpass}
+      POSTGRES_DB: ${POSTGRES_DB:-holygrail_dev}
     volumes:
       - db_data:/var/lib/postgresql/data
       - ./migrations:/migrations:ro
       - ./seeds:/seeds:ro
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 12
+    restart: unless-stopped
+    stop_grace_period: 30s
+    networks:
+      - app
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   redis:
     image: redis:7-alpine
+    # Append-only persistence so queued jobs survive restarts.
+    command: redis-server --appendonly yes
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -30,7 +77,164 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
+    restart: unless-stopped
+    stop_grace_period: 30s
+    networks:
+      - app
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8080
+      APP_ENV: ${APP_ENV:-production}
+      POSTGRES_USER: ${POSTGRES_USER:-pguser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pgpass}
+      POSTGRES_DB: ${POSTGRES_DB:-holygrail_dev}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      REDIS_ADDR: redis:6379
+      STORAGE_PATH: /app/data
+      CORS_ALLOWED_ORIGIN: ${CORS_ALLOWED_ORIGIN:-http://localhost:3000}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-64}
+      DB_MAX_OPEN_CONNS: ${DB_MAX_OPEN_CONNS:-25}
+      DB_MAX_IDLE_CONNS: ${DB_MAX_IDLE_CONNS:-5}
+      DB_CONN_MAX_LIFETIME: ${DB_CONN_MAX_LIFETIME:-30m}
+    volumes:
+      - app_data:/app/data
+    ports:
+      - "${API_PORT:-8080}:8080"
+    healthcheck:
+      # Plain GET probe: the handler rejects HEAD (wget --spider) with 405.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    # SIGTERM -> cmd/api graceful shutdown (10s internal drain).
+    stop_grace_period: 30s
+    networks:
+      - app
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      POSTGRES_USER: ${POSTGRES_USER:-pguser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pgpass}
+      POSTGRES_DB: ${POSTGRES_DB:-holygrail_dev}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      REDIS_ADDR: redis:6379
+      STORAGE_PATH: /app/data
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_EMBEDDING_MODEL: ${OPENAI_EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_BATCH_SIZE: ${EMBEDDING_BATCH_SIZE:-64}
+      DB_MAX_OPEN_CONNS: ${DB_MAX_OPEN_CONNS:-25}
+      DB_MAX_IDLE_CONNS: ${DB_MAX_IDLE_CONNS:-5}
+      DB_CONN_MAX_LIFETIME: ${DB_CONN_MAX_LIFETIME:-30m}
+    volumes:
+      - app_data:/app/data
+    # No HTTP server in the worker; the check fails if the process is gone.
+    healthcheck:
+      test: ["CMD-SHELL", "ps | grep -q '[w]orker' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    # SIGTERM -> cmd/worker signal-aware shutdown (asynq/poll loop drain).
+    stop_grace_period: 30s
+    networks:
+      - app
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8080/api/v1}
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      PORT: 3000
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    stop_grace_period: 30s
+    networks:
+      - app
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  app:
+    driver: bridge
 
 volumes:
   db_data:
   redis_data:
+  # Shared upload storage between api (writes) and worker (reads).
+  app_data:

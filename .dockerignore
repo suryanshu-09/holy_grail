@@ -1,0 +1,25 @@
+# Shared build context ignores for all images (PLAN4 Phase 25).
+.git
+.gitignore
+.next
+out/
+dist/
+build/
+node_modules
+npm-debug.log*
+yarn-error.log*
+ coverage/
+.nyc_output/
+# Local dev data and uploads must never bake into images.
+data/
+db_data/
+*.test
+*.out
+# Local-only env files (secrets are injected at runtime, never committed).
+.env
+.env.local
+.env.*.local
+# Editor / OS noise.
+.vscode
+.idea
+.DS_Store

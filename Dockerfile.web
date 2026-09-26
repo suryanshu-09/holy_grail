@@ -1,0 +1,40 @@
+# Frontend web image (PLAN4 Phase 25 §30.2).
+# Multi-stage: Node builder (prod build, standalone output) -> minimal
+# Alpine runtime running as non-root with production dependencies only.
+# Build: docker build -f Dockerfile.web --build-arg NEXT_PUBLIC_API_URL=https://api.example.com/api/v1 -t holy-grail-web .
+# NOTE: NEXT_PUBLIC_* values are baked in at build time; rebuild to change them.
+
+# ---- builder ----
+FROM node:20-alpine AS builder
+WORKDIR /app
+# Install dependencies first for better layer caching.
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY next.config.js tsconfig.json tailwind.config.cjs postcss.config.cjs ./
+COPY pages/ ./pages/
+COPY components/ ./components/
+COPY lib/ ./lib/
+COPY styles/ ./styles/
+ARG NEXT_PUBLIC_API_URL=http://localhost:8080/api/v1
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL} \
+    NEXT_TELEMETRY_DISABLED=1
+RUN npm run build
+
+# ---- runtime ----
+FROM node:20-alpine AS runtime
+ENV NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    HOSTNAME=0.0.0.0 \
+    PORT=3000
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+WORKDIR /app
+# Standalone server + static assets only; devDependencies never leave builder.
+COPY --from=builder --chown=appuser:appgroup /app/.next/standalone ./
+COPY --from=builder --chown=appuser:appgroup /app/.next/static ./.next/static
+USER appuser
+EXPOSE 3000
+# Exec form preserves SIGTERM for graceful shutdown.
+ENTRYPOINT ["node", "server.js"]
+# Homepage probe; start-period covers Next.js cold start.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1

@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: db-up db-down db-migrate db-seed
+.PHONY: db-up db-down db-migrate db-seed prod-build prod-up prod-down
 
 db-up:
 	@echo "Starting Postgres (pgvector) + Redis containers..."
@@ -20,3 +20,13 @@ db-migrate:
 db-seed:
 	@echo "Applying seed data from ./seeds/seed.sql"
 	docker compose exec -T db bash -lc 'psql -v ON_ERROR_STOP=1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -f /seeds/seed.sql'
+
+# Full production stack (Phase 25): postgres + redis + api + worker + web.
+prod-build:
+	docker compose build api worker web
+
+prod-up:
+	docker compose up -d --build
+
+prod-down:
+	docker compose down
