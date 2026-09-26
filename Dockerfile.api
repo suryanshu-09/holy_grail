@@ -31,7 +31,10 @@ EXPOSE 8080
 ENV HOST=0.0.0.0 \
     PORT=8080 \
     APP_ENV=production \
-    STORAGE_PATH=/app/data
+    STORAGE_PATH=/app/data \
+    STORAGE_BACKEND=local \
+    SENTRY_DSN= \
+    RATE_LIMIT_RPS=100
 # Exec form preserves SIGTERM so cmd/api's graceful shutdown runs.
 ENTRYPOINT ["/app/api"]
 # API health endpoint (plain GET: the handler rejects HEAD with 405, so no

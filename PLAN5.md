@@ -6,18 +6,20 @@ Deployment is optional until the application works locally.
 
 ## Before Deployment
 
-- [ ] Production configuration
-- [ ] Production database
-- [ ] Object storage
-- [ ] Secrets management
-- [ ] HTTPS
-- [ ] CORS configuration
-- [ ] Rate limiting
-- [ ] Database backups
-- [ ] File storage migration
-- [ ] Logging
-- [ ] Monitoring
-- [ ] Error tracking
+- [x] Production configuration
+- [x] Production database
+- [x] Object storage
+- [x] Secrets management
+- [x] HTTPS
+- [x] CORS configuration
+- [x] Rate limiting
+- [x] Database backups
+- [x] File storage migration
+- [x] Logging
+- [x] Monitoring
+- [x] Error tracking
+
+Completed Verified: NewStorageFromConfig wired in cmd/api and cmd/worker, STORAGE/SENTRY/RATE_LIMIT env passed in docker-compose and Dockerfiles, go vet + go test + npm build passing.
 
 ---
 

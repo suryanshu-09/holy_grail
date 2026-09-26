@@ -29,7 +29,10 @@ COPY --from=builder /out/worker /app/worker
 RUN mkdir -p /app/data && chown -R appuser:appgroup /app
 USER appuser
 ENV APP_ENV=production \
-    STORAGE_PATH=/app/data
+    STORAGE_PATH=/app/data \
+    STORAGE_BACKEND=local \
+    SENTRY_DSN= \
+    RATE_LIMIT_RPS=100
 # Exec form preserves SIGTERM so cmd/worker's signal-aware shutdown runs.
 ENTRYPOINT ["/app/worker"]
 # No HTTP server in the worker: fail the check if the process is gone.

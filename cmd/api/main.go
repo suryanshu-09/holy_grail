@@ -65,29 +65,77 @@ func (a *openAIVisionAdapter) Describe(ctx context.Context, in extraction.Descri
 	return res, nil
 }
 
+// storageConfigFromApp builds an S3Config from AppConfig, falling back to
+// the AWS_* credential/region conventions (see S3ConfigFromEnv) when the
+// S3_* variants are empty so both conventions keep working.
+func storageConfigFromApp(cfg *config.AppConfig) storage.S3Config {
+	s3cfg := storage.S3Config{
+		Endpoint:  cfg.S3Endpoint,
+		Bucket:    cfg.S3Bucket,
+		Region:    cfg.S3Region,
+		AccessKey: cfg.S3AccessKey,
+		SecretKey: cfg.S3SecretKey,
+	}
+	env := storage.S3ConfigFromEnv()
+	if s3cfg.Endpoint == "" {
+		s3cfg.Endpoint = env.Endpoint
+	}
+	if s3cfg.Bucket == "" {
+		s3cfg.Bucket = env.Bucket
+	}
+	if s3cfg.Region == "" {
+		s3cfg.Region = env.Region
+	}
+	if s3cfg.AccessKey == "" {
+		s3cfg.AccessKey = env.AccessKey
+	}
+	if s3cfg.SecretKey == "" {
+		s3cfg.SecretKey = env.SecretKey
+	}
+	return s3cfg
+}
+
 func main() {
 	cfg := config.NewAppConfig()
+	if err := cfg.ValidateProduction(); err != nil {
+		slog.Error("invalid production configuration", "error", err)
+		os.Exit(1)
+	}
 
 	logger := logging.New(cfg.Env)
 	slog.SetDefault(logger)
 
+	// Production observability (Phase 26): JSON logging is selected by
+	// logging.New when APP_ENV=production; the error reporter posts
+	// redacted reports to SENTRY_DSN (disabled when empty) and the
+	// monitor backs GET /api/v1/metrics (uptime/goroutines/db stats).
+	reporter := observability.NewReporterFromEnv()
+	if reporter.Enabled() {
+		logger.Info("error reporting enabled")
+	} else {
+		logger.Info("error reporting disabled (no SENTRY_DSN)")
+	}
+
 	db, err := database.NewConnection(&cfg)
 	if err != nil {
 		logger.Error("failed to connect to database", "error", err)
+		reporter.Report(err, map[string]any{"operation": "db_connect"})
 		os.Exit(1)
 	}
 	defer db.Close()
+	monitor := apihttp.NewMonitor(db)
 
 	documentRepo := documents.NewRepository(db)
 	questionRepo := questions.NewRepository(db)
 	topicRepo := topics.NewRepository(db)
 	embeddingRepo := embeddings.NewRepository(db)
 
-	store, err := storage.NewLocalStore(cfg.DataDir)
+	store, err := storage.NewStorageFromConfig(cfg.StorageBackend, cfg.DataDir, storageConfigFromApp(&cfg))
 	if err != nil {
-		logger.Error("failed to initialise local storage", "error", err)
+		logger.Error("failed to initialise storage", "backend", cfg.StorageBackend, "error", err)
 		os.Exit(1)
 	}
+	logger.Info("storage initialised", "backend", cfg.StorageBackend)
 
 	extractor, err := extraction.NewService(cfg.DataDir)
 	if err != nil {
@@ -286,6 +334,8 @@ func main() {
 		Auth:           authSvc,
 		Jobs:           jobStore,
 		JobEnqueuer:    jobEnqueuer,
+		Reporter:       reporter,
+		Monitor:        monitor,
 	}
 
 	server := &http.Server{
@@ -303,6 +353,7 @@ func main() {
 		logger.Info("starting server", "addr", server.Addr, "env", cfg.Env)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("server error", "error", err)
+			reporter.Report(err, map[string]any{"operation": "serve"})
 			os.Exit(1)
 		}
 	}()
