@@ -2,7 +2,11 @@ package http
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
+	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/suryanshu-09/holy_grail/internal/auth"
 	"github.com/suryanshu-09/holy_grail/internal/config"
@@ -10,6 +14,7 @@ import (
 	"github.com/suryanshu-09/holy_grail/internal/extraction"
 	"github.com/suryanshu-09/holy_grail/internal/httpx"
 	"github.com/suryanshu-09/holy_grail/internal/jobs"
+	"github.com/suryanshu-09/holy_grail/internal/observability"
 	"github.com/suryanshu-09/holy_grail/internal/questions"
 	"github.com/suryanshu-09/holy_grail/internal/topics"
 )
@@ -40,6 +45,10 @@ type RouterDeps struct {
 	Auth           *auth.Service
 	Jobs           jobs.Store
 	JobEnqueuer    jobs.Enqueuer
+	// Reporter receives redacted panic reports (nil/disabled = local log only).
+	Reporter *observability.Reporter
+	// Monitor backs GET /api/v1/metrics (nil = default monitor without db stats).
+	Monitor *Monitor
 }
 
 // NewRouter builds the versioned route table wrapped in middleware.
@@ -48,6 +57,15 @@ func NewRouter(cfg *config.AppConfig, deps RouterDeps) http.Handler {
 
 	mux.Handle(APIVersion+"/health", handleHealth())
 	mux.Handle(APIVersion+"/ready", handleReady(deps.DB))
+	mon := deps.Monitor
+	if mon == nil {
+		var sqldb *sql.DB
+		if v, ok := deps.DB.(*sql.DB); ok {
+			sqldb = v
+		}
+		mon = NewMonitor(sqldb)
+	}
+	mux.Handle(APIVersion+"/metrics", handleMetrics(mon))
 	mux.Handle(APIVersion+"/documents", handleDocuments(deps.Documents, cfg.MaxUploadBytes))
 	mux.Handle("POST "+APIVersion+"/documents/{id}/extract", handleExtractDocument(deps.Documents, deps.Extraction))
 	mux.Handle("POST "+APIVersion+"/documents/{id}/extract-preview", handleExtractPreview(deps.Documents, deps.Extraction))
@@ -90,7 +108,44 @@ func NewRouter(cfg *config.AppConfig, deps RouterDeps) http.Handler {
 
 	handler := auth.OptionalAuth(deps.Auth)(mux)
 	handler = auth.CSRFMiddleware(cfg.CORSAllowedOrigin)(handler)
-	handler = httpx.Recover(handler)
+	if deps.Reporter != nil && deps.Reporter.Enabled() {
+		handler = recoverWithReporter(deps.Reporter)(handler)
+	} else {
+		handler = httpx.Recover(handler)
+	}
 	handler = httpx.RequestLogging(handler)
+	handler = httpx.SecurityHeaders(handler)
+	handler = httpx.RateLimitMiddleware(globalRateLimiter(cfg))(handler)
 	return httpx.CORS(cfg.CORSAllowedOrigin)(handler)
+}
+
+// recoverWithReporter converts panics into 500 JSON errors (like
+// httpx.Recover) and additionally forwards a redacted report to the
+// configured error tracker. A nil/disabled reporter degrades to local
+// logging only; reporting failures never affect the response.
+func recoverWithReporter(reporter *observability.Reporter) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				if rec := recover(); rec != nil {
+					err := fmt.Errorf("panic: %v", rec)
+					if reporter != nil {
+						reporter.Report(err, map[string]any{"path": r.URL.Path})
+					}
+					slog.Error("panic recovered", "panic", rec, "path", r.URL.Path)
+					httpx.Error(w, http.StatusInternalServerError, "internal server error")
+				}
+			}()
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// globalRateLimiter builds the global per-IP rate limiter from
+// RATE_LIMIT_RPS (requests per second). Non-positive values disable it.
+func globalRateLimiter(cfg *config.AppConfig) *httpx.RateLimiter {
+	if cfg == nil || cfg.RateLimitRPS <= 0 {
+		return nil
+	}
+	return httpx.NewRateLimiter(cfg.RateLimitRPS, time.Second)
 }

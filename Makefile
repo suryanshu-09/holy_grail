@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: db-up db-down db-migrate db-seed prod-build prod-up prod-down
+.PHONY: db-up db-down db-migrate db-seed prod-build prod-up prod-down db-backup db-restore
 
 db-up:
 	@echo "Starting Postgres (pgvector) + Redis containers..."
@@ -30,3 +30,19 @@ prod-up:
 
 prod-down:
 	docker compose down
+
+# Database backup via pg_dump (custom format) with retention.
+# Knobs: BACKUP_DIR (default ./backups), BACKUP_RETENTION_COUNT (default 7),
+# BACKUP_PREFIX (default holygrail). Uses DATABASE_URL when set, else POSTGRES_*.
+db-backup:
+	./scripts/db-backup.sh
+
+# Restore a backup taken by db-backup. Usage: make db-restore FILE=backups/<name>.dump
+# Uses DATABASE_URL when set, else POSTGRES_* (mirrors scripts/db-backup.sh).
+db-restore:
+	@if [ -z "$(FILE)" ]; then echo "usage: make db-restore FILE=backups/<name>.dump"; exit 1; fi
+	@if [ -n "$(DATABASE_URL)" ]; then pg_restore --clean --if-exists -d "$(DATABASE_URL)" "$(FILE)"; \
+	else PGPASSWORD="$${POSTGRES_PASSWORD:-pgpass}" pg_restore --clean --if-exists \
+	  --host="$${POSTGRES_HOST:-localhost}" --port="$${POSTGRES_PORT:-5432}" \
+	  --username="$${POSTGRES_USER:-pguser}" --dbname="$${POSTGRES_DB:-holygrail_dev}" "$(FILE)"; fi
+	@echo "Restored from $(FILE)"

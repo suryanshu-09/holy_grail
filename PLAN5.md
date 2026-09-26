@@ -19,7 +19,9 @@ Deployment is optional until the application works locally.
 - [x] Monitoring
 - [x] Error tracking
 
-Completed Verified: NewStorageFromConfig wired in cmd/api and cmd/worker, STORAGE/SENTRY/RATE_LIMIT env passed in docker-compose and Dockerfiles, go vet + go test + npm build passing.
+Completed: 2026-09-26
+
+Verified: `internal/storage/storage.go` adds `Storage` interface (`Put/Get/Delete` + `SaveDocument/RemoveDocument` compat) with `LocalStorage`/`LocalStore` and `S3Storage` (S3-compatible stdlib client, `STORAGE_BACKEND`/`S3_*` env); `config.ValidateProduction` fail-fast, CORS+HSTS hardening, global rate limiting, `/api/v1/metrics`, Sentry-compatible error reporter, `scripts/db-backup.sh` + `cmd/migrate-storage`, `docs/DEPLOYMENT.md`; `NewStorageFromConfig` wired in `cmd/api`+`cmd/worker` with compose env passthrough; `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 ---
 

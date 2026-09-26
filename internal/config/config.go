@@ -1,8 +1,10 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -23,6 +25,13 @@ type AppConfig struct {
 	EmbeddingModel     string
 	EmbeddingBatchSize int
 	RedisAddr          string
+	StorageBackend     string
+	S3Bucket           string
+	S3Region           string
+	S3Endpoint         string
+	S3AccessKey        string
+	S3SecretKey        string
+	RateLimitRPS       int
 }
 
 // NewAppConfig creates AppConfig from environment variables
@@ -59,7 +68,53 @@ func NewAppConfig() AppConfig {
 		EmbeddingModel:     getEnv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
 		EmbeddingBatchSize: getIntEnv("EMBEDDING_BATCH_SIZE", 64),
 		RedisAddr:          getEnv("REDIS_ADDR", "localhost:6379"),
+		StorageBackend:     getEnv("STORAGE_BACKEND", "local"),
+		S3Bucket:           getEnv("S3_BUCKET", ""),
+		S3Region:           getEnv("S3_REGION", ""),
+		S3Endpoint:         getEnv("S3_ENDPOINT", ""),
+		S3AccessKey:        getEnv("S3_ACCESS_KEY", ""),
+		S3SecretKey:        getEnv("S3_SECRET_KEY", ""),
+		RateLimitRPS:       getIntEnv("RATE_LIMIT_RPS", 100),
 	}
+}
+
+// IsProduction reports whether APP_ENV is production.
+func (c AppConfig) IsProduction() bool {
+	return strings.EqualFold(strings.TrimSpace(c.Env), "production")
+}
+
+// ValidateProduction fails fast on unsafe production configuration.
+// It is a no-op outside APP_ENV=production. In production it requires:
+//   - an explicit non-wildcard CORS_ALLOWED_ORIGIN,
+//   - DATABASE_URL explicitly set (no built-from-parts fallback),
+//   - no default/placeholder DB password,
+//   - no sslmode=disable (TLS required),
+//   - S3_BUCKET when STORAGE_BACKEND=s3.
+func (c AppConfig) ValidateProduction() error {
+	if !c.IsProduction() {
+		return nil
+	}
+	origin := strings.TrimSpace(c.CORSAllowedOrigin)
+	if origin == "" || origin == "*" || strings.Contains(origin, "*") {
+		return fmt.Errorf("production requires explicit CORS_ALLOWED_ORIGIN (wildcard not allowed)")
+	}
+	if strings.TrimSpace(os.Getenv("DATABASE_URL")) == "" {
+		return fmt.Errorf("production requires DATABASE_URL to be set")
+	}
+	if strings.Contains(c.DatabaseURL, "pgpass") ||
+		strings.Contains(c.DatabaseURL, "changeme") ||
+		strings.Contains(c.DatabaseURL, "password123") {
+		return fmt.Errorf("production requires a non-default database password")
+	}
+	if strings.Contains(strings.ToLower(c.DatabaseURL), "sslmode=disable") {
+		return fmt.Errorf("production DATABASE_URL must not use sslmode=disable")
+	}
+	if strings.EqualFold(strings.TrimSpace(c.StorageBackend), "s3") {
+		if strings.TrimSpace(c.S3Bucket) == "" {
+			return fmt.Errorf("production STORAGE_BACKEND=s3 requires S3_BUCKET to be set")
+		}
+	}
+	return nil
 }
 
 func getEnv(key, fallback string) string {

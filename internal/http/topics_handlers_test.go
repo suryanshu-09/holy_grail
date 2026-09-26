@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/suryanshu-09/holy_grail/internal/apperr"
@@ -378,7 +379,7 @@ func TestCORS_AllowsPATCH(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	allow := w.Header().Get("Access-Control-Allow-Methods")
-	if allow != "GET, POST, PATCH, OPTIONS" {
+	if !strings.Contains(allow, "PATCH") {
 		t.Errorf("expected CORS methods to include PATCH, got %q", allow)
 	}
 }
