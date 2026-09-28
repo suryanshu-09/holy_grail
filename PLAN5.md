@@ -601,6 +601,8 @@ Completed: 2026-09-28
 
 Verified: `docker-compose.yml` (db/redis/api/worker/web, volumes, healthchecks, env incl. `OPENAI_MODEL`), `Dockerfile.api`/`Dockerfile.worker`/`Dockerfile.web`, `internal/config/config.go`, `Makefile` `prod-up` (`docker compose up -d --build`); `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
+Live verification (2026-09-28, `APP_ENV=development`, no `OPENAI_API_KEY`): all 5 containers healthy; `/health`+`/ready`+web 200; pgvector extension + migrations + seed live; upload→extract (2 pages, 3 MCQs)→classify (heuristic topics)→quiz `/quiz/generate` (deterministic Original-PYQ fallback with provenance) 200; `GET/DELETE /documents/{id}` 200/204/404; background job `queued → completed (100%)` via Redis→Asynq→Worker; all 8 frontend routes 200; `/metrics` 200; containers run as `appuser`; data survives `compose restart api`; invalid upload 400; AI-dependent paths degrade gracefully (`/embed`, `/search`, `/debug/*` 503, no 500s). Live run fixed 3 real bugs: typed-nil `*embeddings.Service` panic on `/embed` (`embedderPipelineOrNil` + 503 test), API enqueue never published to Redis (new `asynqClientAdapter` in `cmd/api`), `PostgresStore.Claim`/poll query `make_interval` type error (`timeout_seconds::double precision` + `$2::timestamptz`, `postgres_claim_test.go`). Note: `APP_ENV=production` correctly refuses to boot without explicit `DATABASE_URL` (fail-fast, by design); embedding/vector/hybrid search need `OPENAI_API_KEY`.
+
 ---
 
 # Development Rules

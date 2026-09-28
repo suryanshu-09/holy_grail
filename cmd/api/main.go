@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/hibiken/asynq"
 
 	apihttp "github.com/suryanshu-09/holy_grail/internal/http"
 
@@ -302,13 +306,13 @@ func main() {
 	quizEvalSvc := quiz.NewEvaluationService(quiz.NewEvaluationRepository(db))
 
 	// Wire Phase 19 background jobs: Postgres-backed store with an
-	// Asynq bridge in persist-only mode (nil client). The handlers stay
-	// nil-safe (503 when store/enqueuer are nil), and persist-only means
-	// the API works with no Redis running; the worker app attaches a real
-	// Asynq client later.
+	// Asynq bridge. When REDIS_ADDR points at a reachable Redis the bridge
+	// publishes task envelopes so the worker (asynq server path) picks jobs
+	// up; otherwise it stays persist-only (nil client) and the API still
+	// works with no Redis running (a worker in DB poll-loop mode claims them).
 	jobStore := jobs.NewPostgresStore(db)
-	jobEnqueuer := jobs.NewAsynqEnqueuer(jobStore, nil, jobs.AsynqQueue)
-	logger.Info("job queue enabled (persist-only, no Redis client)")
+	jobEnqueuer := jobs.NewAsynqEnqueuer(jobStore, asynqPublishClient(logger), jobs.AsynqQueue)
+	logger.Info("job queue enabled")
 
 	// Wire Phase 20 authentication: users + sessions + preferences.
 	// The handlers stay nil-safe (503 when unconfigured), and the
@@ -324,7 +328,7 @@ func main() {
 		Questions:      questionsSvc,
 		Topics:         topicsSvc,
 		Classifier:     classificationPipeline,
-		Embedder:       embeddingPipeline,
+		Embedder:       embedderPipelineOrNil(embeddingPipeline),
 		Searcher:       searcher,
 		HybridSearcher: hybridSearcher,
 		EvalRunner:     evalRunner,
@@ -369,4 +373,71 @@ func main() {
 	} else {
 		logger.Info("server exited properly")
 	}
+}
+
+// embedderPipelineOrNil converts the concrete *embeddings.Service to the
+// EmbeddingPipeline interface without creating a typed-nil: a nil *Service
+// wrapped in an interface is != nil and would bypass the handler's
+// nil guard (503) and panic on first use. Callers must pass the result.
+func embedderPipelineOrNil(svc *embeddings.Service) apihttp.EmbeddingPipeline {
+	if svc == nil {
+		return nil
+	}
+	return svc
+}
+
+// asynqPublishClient builds the Asynq publish bridge for the job enqueuer.
+// It returns nil (persist-only mode) when REDIS_ADDR is unset or unreachable
+// so the API keeps working with no Redis running. The nil is a true
+// interface nil (not a typed-nil pointer) so the bridge's nil guard holds.
+func asynqPublishClient(logger *slog.Logger) jobs.AsynqClient {
+	addr := os.Getenv("REDIS_ADDR")
+	if addr == "" {
+		return nil
+	}
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		logger.Warn("job queue publish disabled (redis unreachable, persist-only)", "redis_addr", addr, "error", err)
+		return nil
+	}
+	_ = conn.Close()
+	client := asynq.NewClient(asynq.RedisClientOpt{Addr: addr})
+	logger.Info("job queue publishing to redis", "redis_addr", addr)
+	return &asynqClientAdapter{client: client}
+}
+
+// asynqClientAdapter adapts *asynq.Client to jobs.AsynqClient (see
+// internal/jobs.AsynqClient). Duplicate/TaskID-conflict errors are treated
+// as success: the deterministic TaskID means the task is already queued,
+// which is the desired end state for store-level dedup redeliveries.
+type asynqClientAdapter struct {
+	client *asynq.Client
+}
+
+func (a *asynqClientAdapter) Close() {
+	if a != nil && a.client != nil {
+		_ = a.client.Close()
+	}
+}
+
+func (a *asynqClientAdapter) EnqueueTask(ctx context.Context, taskType string, payload []byte, opts jobs.AsynqTaskOptions) (string, error) {
+	task := asynq.NewTask(taskType, payload)
+	asynqOpts := []asynq.Option{
+		asynq.Queue(opts.Queue),
+		asynq.MaxRetry(opts.MaxRetry),
+	}
+	if opts.TaskID != "" {
+		asynqOpts = append(asynqOpts, asynq.TaskID(opts.TaskID))
+	}
+	if opts.TimeoutSeconds > 0 {
+		asynqOpts = append(asynqOpts, asynq.Timeout(time.Duration(opts.TimeoutSeconds)*time.Second))
+	}
+	info, err := a.client.EnqueueContext(ctx, task, asynqOpts...)
+	if err != nil {
+		if errors.Is(err, asynq.ErrDuplicateTask) || errors.Is(err, asynq.ErrTaskIDConflict) {
+			return opts.TaskID, nil
+		}
+		return "", err
+	}
+	return info.ID, nil
 }

@@ -298,7 +298,7 @@ func (s *PostgresStore) Claim(ctx context.Context, id string, now time.Time) (Jo
 			started_at = COALESCE(started_at, $2), updated_at = $2
 		WHERE id = $1 AND (
 			status IN ('queued', 'pending')
-			OR (status = 'active' AND updated_at < $2 - make_interval(secs => timeout_seconds))
+			OR (status = 'active' AND updated_at < $2::timestamptz - make_interval(secs => timeout_seconds::double precision))
 		) RETURNING `+jobColumns, id, now.UTC()))
 	if err == nil {
 		return j, nil

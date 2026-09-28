@@ -417,7 +417,7 @@ func queuedCandidateIDs(ctx context.Context, store Store) ([]string, error) {
 		rows, err := s.db.QueryContext(ctx,
 			`SELECT id FROM jobs
 			WHERE status IN ('queued', 'pending')
-			   OR (status = 'active' AND updated_at < now() - make_interval(secs => timeout_seconds))
+			   OR (status = 'active' AND updated_at < now() - make_interval(secs => timeout_seconds::double precision))
 			ORDER BY created_at ASC LIMIT $1`, pollCandidateLimit)
 		if err != nil {
 			return nil, fmt.Errorf("jobs: list queued: %w", err)

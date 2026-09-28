@@ -74,3 +74,22 @@ func TestHandleEmbedDocumentRejectsUnknownDocument(t *testing.T) {
 		t.Fatalf("status = %d called = %t", response.Code, pipeline.called)
 	}
 }
+
+func TestHandleEmbedDocumentUnconfiguredPipeline(t *testing.T) {
+	// No embedding pipeline (e.g. no OPENAI_API_KEY) must degrade to 503,
+	// never panic: this guards the typed-nil regression where a nil
+	// *embeddings.Service wrapped in the interface bypassed the nil check.
+	documentsService := documents.NewService(embeddingDocumentRepo{documents: map[string]documents.Document{
+		"document-1": {ID: "document-1"},
+	}}, nil)
+	var pipeline EmbeddingPipeline
+	handler := handleEmbedDocument(documentsService, pipeline)
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/documents/document-1/embed", nil)
+	request.SetPathValue("id", "document-1")
+	response := httptest.NewRecorder()
+
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d body = %s, want 503", response.Code, response.Body.String())
+	}
+}
