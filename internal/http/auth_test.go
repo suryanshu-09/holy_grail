@@ -236,6 +236,13 @@ func (f *ownedDocRepo) GetByID(_ context.Context, id string) (documents.Document
 }
 func (f *ownedDocRepo) Create(_ context.Context, d *documents.Document) error { return nil }
 func (f *ownedDocRepo) UpdateStatus(_ context.Context, _, _ string) error     { return nil }
+func (f *ownedDocRepo) Delete(_ context.Context, id string) error {
+	if _, ok := f.docs[id]; !ok {
+		return apperr.ErrNotFound
+	}
+	delete(f.docs, id)
+	return nil
+}
 
 func TestQuizSessionOwnership(t *testing.T) {
 	authSvc := testAuthService()

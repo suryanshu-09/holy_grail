@@ -105,3 +105,42 @@ func uploadDocument(svc *documents.Service, maxUploadBytes int64) http.HandlerFu
 		httpx.WriteJSON(w, http.StatusCreated, doc)
 	}
 }
+
+// handleDocumentByID serves a single document (GET) and deletes it (DELETE).
+// Ownership is enforced by the service layer (foreign-owned ids 404).
+func handleDocumentByID(svc *documents.Service) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if id == "" {
+			httpx.Error(w, http.StatusBadRequest, "document id is required")
+			return
+		}
+		switch r.Method {
+		case http.MethodGet:
+			doc, err := svc.Get(r.Context(), id)
+			if err != nil {
+				if errors.Is(err, apperr.ErrNotFound) {
+					httpx.Error(w, http.StatusNotFound, "document not found")
+					return
+				}
+				httpx.LogError("document get failed", err)
+				httpx.Error(w, http.StatusInternalServerError, "internal server error")
+				return
+			}
+			httpx.WriteJSON(w, http.StatusOK, doc)
+		case http.MethodDelete:
+			if err := svc.Delete(r.Context(), id); err != nil {
+				if errors.Is(err, apperr.ErrNotFound) {
+					httpx.Error(w, http.StatusNotFound, "document not found")
+					return
+				}
+				httpx.LogError("document delete failed", err)
+				httpx.Error(w, http.StatusInternalServerError, "internal server error")
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			methodNotAllowed(w, http.MethodGet, http.MethodDelete)
+		}
+	})
+}

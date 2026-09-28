@@ -30,6 +30,7 @@ func (r embeddingDocumentRepo) Create(_ context.Context, _ *documents.Document) 
 func (r embeddingDocumentRepo) UpdateStatus(_ context.Context, _ string, _ string) error {
 	return nil
 }
+func (r embeddingDocumentRepo) Delete(_ context.Context, _ string) error { return nil }
 
 type embeddingPipelineStub struct {
 	result embeddings.Result

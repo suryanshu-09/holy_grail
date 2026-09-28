@@ -111,6 +111,16 @@ func (r *integDocRepo) UpdateStatus(_ context.Context, id string, status string)
 	return nil
 }
 
+func (r *integDocRepo) Delete(_ context.Context, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, ok := r.docs[id]; !ok {
+		return apperr.ErrNotFound
+	}
+	delete(r.docs, id)
+	return nil
+}
+
 type integDocStorage struct {
 	mu    sync.Mutex
 	files map[string][]byte

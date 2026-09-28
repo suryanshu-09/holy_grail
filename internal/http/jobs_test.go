@@ -47,6 +47,13 @@ func (f *fakeDocRepo) Create(ctx context.Context, d *documents.Document) error {
 func (f *fakeDocRepo) UpdateStatus(ctx context.Context, id, status string) error {
 	return nil
 }
+func (f *fakeDocRepo) Delete(ctx context.Context, id string) error {
+	if _, ok := f.docs[id]; !ok {
+		return apperr.ErrNotFound
+	}
+	delete(f.docs, id)
+	return nil
+}
 
 func TestSmokeJobsAPI(t *testing.T) {
 	// Use apperr-mapped repo instead: swap to real not-found mapping check

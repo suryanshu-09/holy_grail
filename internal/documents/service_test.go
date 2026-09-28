@@ -68,6 +68,14 @@ func (f *fakeDocRepo) UpdateStatus(_ context.Context, id string, status string) 
 	return nil
 }
 
+func (f *fakeDocRepo) Delete(_ context.Context, id string) error {
+	if _, ok := f.docs[id]; !ok {
+		return apperr.ErrNotFound
+	}
+	delete(f.docs, id)
+	return nil
+}
+
 // fakeDocStore is an in-memory Storage for service tests.
 type fakeDocStore struct {
 	saved     map[string][]byte
@@ -218,6 +226,42 @@ func TestServiceGetOwnership(t *testing.T) {
 }
 
 func strPtrFor(s string) *string { return &s }
+
+func TestServiceDelete(t *testing.T) {
+	newSvc := func() (*Service, *fakeDocRepo, *fakeDocStore) {
+		repo := newFakeDocRepo()
+		store := newFakeDocStore()
+		repo.docs["d1"] = Document{ID: "d1", Filename: "a.pdf", Status: StatusUploaded, UserID: strPtrFor("u1")}
+		return NewService(repo, store), repo, store
+	}
+
+	t.Run("owner deletes own", func(t *testing.T) {
+		svc, repo, store := newSvc()
+		if err := svc.Delete(ctxWithUserID("u1"), "d1"); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+		if _, ok := repo.docs["d1"]; ok {
+			t.Fatalf("document still present after delete")
+		}
+		if len(store.removed) != 1 || store.removed[0] != "d1" {
+			t.Fatalf("removed = %v, want [d1]", store.removed)
+		}
+	})
+
+	t.Run("foreign owner hidden as not found", func(t *testing.T) {
+		svc, _, _ := newSvc()
+		if err := svc.Delete(ctxWithUserID("other"), "d1"); !errors.Is(err, apperr.ErrNotFound) {
+			t.Fatalf("Delete = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("missing maps to not found", func(t *testing.T) {
+		svc, _, _ := newSvc()
+		if err := svc.Delete(context.Background(), "nope"); !errors.Is(err, apperr.ErrNotFound) {
+			t.Fatalf("Delete = %v, want ErrNotFound", err)
+		}
+	})
+}
 
 func TestServiceUploadValidation(t *testing.T) {
 	pdf := []byte("%PDF-1.7 fake content")

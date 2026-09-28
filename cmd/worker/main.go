@@ -418,7 +418,7 @@ func main() {
 	// pipeline exactly like cmd/api so worker output matches inline output.
 	var embeddingPipeline *embeddings.Service
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
-		openai, oErr := llm.NewOpenAIClient(key, "gpt-3.5-turbo", "")
+		openai, oErr := llm.NewOpenAIClient(key, cfg.ChatModel, "")
 		if oErr != nil {
 			logger.Warn("worker: failed to create OpenAI client", "error", oErr)
 			extractionSvc = extractionSvc.WithTopicClassifier(topics.NewHeuristicClassifier(), topicRepo)

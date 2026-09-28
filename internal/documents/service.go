@@ -25,6 +25,7 @@ type Repository interface {
 	GetByID(ctx context.Context, id string) (Document, error)
 	Create(ctx context.Context, d *Document) error
 	UpdateStatus(ctx context.Context, id string, status string) error
+	Delete(ctx context.Context, id string) error
 }
 
 // Document lifecycle statuses stored in documents.status.
@@ -143,4 +144,19 @@ func (s *Service) Upload(ctx context.Context, originalName string, src io.Reader
 		return Document{}, fmt.Errorf("documents: create record: %w", err)
 	}
 	return doc, nil
+}
+
+// Delete removes a document and its stored file. Ownership is enforced via
+// Get (foreign-owned ids report as not found). The stored file removal is
+// best-effort: metadata deletion wins and file errors are surfaced only
+// when the row delete succeeded.
+func (s *Service) Delete(ctx context.Context, id string) error {
+	if _, err := s.Get(ctx, id); err != nil {
+		return err
+	}
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return err
+	}
+	_ = s.store.RemoveDocument(ctx, id)
+	return nil
 }

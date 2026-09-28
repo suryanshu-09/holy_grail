@@ -22,6 +22,7 @@ type AppConfig struct {
 	CORSAllowedOrigin  string
 	DataDir            string
 	MaxUploadBytes     int64
+	ChatModel          string
 	EmbeddingModel     string
 	EmbeddingBatchSize int
 	RedisAddr          string
@@ -65,6 +66,7 @@ func NewAppConfig() AppConfig {
 		CORSAllowedOrigin:  getEnv("CORS_ALLOWED_ORIGIN", ""),
 		DataDir:            getEnv("STORAGE_PATH", "data"),
 		MaxUploadBytes:     getInt64Env("MAX_UPLOAD_BYTES", 50*1024*1024),
+		ChatModel:          getEnv("OPENAI_MODEL", "gpt-3.5-turbo"),
 		EmbeddingModel:     getEnv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
 		EmbeddingBatchSize: getIntEnv("EMBEDDING_BATCH_SIZE", 64),
 		RedisAddr:          getEnv("REDIS_ADDR", "localhost:6379"),

@@ -165,87 +165,115 @@ The project should be considered a functional MVP when all of the following work
 
 ## Infrastructure
 
-- [ ] PostgreSQL runs through Docker Compose
-- [ ] pgvector works
-- [ ] Database migrations work
-- [ ] Database can be seeded
-- [ ] Go backend connects to database
+- [x] PostgreSQL runs through Docker Compose
+- [x] pgvector works
+- [x] Database migrations work
+- [x] Database can be seeded
+- [x] Go backend connects to database
+
+Completed: 2026-09-28
+
+Verified: `docker-compose.yml` (`db` ankane/pgvector + `db_data` volume, healthcheck), `migrations/001_create_schema.sql` (`CREATE EXTENSION vector`) + `005_add_vector_search.sql`, `Makefile` `db-up/db-migrate/db-seed`, `internal/database/db.go` (`sql.Open`+`PingContext`), `internal/config/config.go` (`DATABASE_URL`/parts); `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 ---
 
 ## Backend
 
-- [ ] Go API works
-- [ ] Document upload works
-- [ ] Documents are persisted
-- [ ] Questions are persisted
-- [ ] Topics are persisted
-- [ ] Images are persisted
-- [ ] Embeddings are persisted
-- [ ] Vector search works
-- [ ] Topic filtering works
-- [ ] Quiz generation works
+- [x] Go API works
+- [x] Document upload works
+- [x] Documents are persisted
+- [x] Questions are persisted
+- [x] Topics are persisted
+- [x] Images are persisted
+- [x] Embeddings are persisted
+- [x] Vector search works
+- [x] Topic filtering works
+- [x] Quiz generation works
+
+Completed: 2026-09-28
+
+Verified: `cmd/api/main.go` + `internal/http/router.go`, `internal/http/documents.go` (upload/list + `GET/DELETE /documents/{id}` via `handleDocumentByID`), `internal/documents/service.go` (`Upload/Get/Delete` + ownership) + `repository.go` (`Create/GetByID/Delete/List`), `internal/embeddings/repository.go` (`Upsert`), `internal/search/repository.go` (vector + topic filter), `internal/quiz/service.go` (`Generate`); `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 ---
 
 ## PDF Pipeline
 
-- [ ] PDF text extraction works
-- [ ] OCR fallback works
-- [ ] Questions are detected
-- [ ] Multi-page questions work
-- [ ] Images are extracted
-- [ ] Images are associated with questions
-- [ ] Topics are classified
+- [x] PDF text extraction works
+- [x] OCR fallback works
+- [x] Questions are detected
+- [x] Multi-page questions work
+- [x] Images are extracted
+- [x] Images are associated with questions
+- [x] Topics are classified
+
+Completed: 2026-09-28
+
+Verified: `internal/extraction/service.go` (pdf text + `NeedsOCR` fallback), `internal/extraction/ocr.go` (`TesseractOCR`), `internal/extraction/question_extractor.go` (detection, multi-page merge, image association), `internal/extraction/image.go` (pdfimages/Go parser), `internal/topics/classifier.go` + `normalize.go`; `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 ---
 
 ## RAG
 
-- [ ] Questions can be embedded
-- [ ] Semantic search works
-- [ ] Metadata filtering works
-- [ ] Hybrid retrieval works
-- [ ] Retrieved questions can be inspected
-- [ ] Retrieved questions can be passed to the LLM
+- [x] Questions can be embedded
+- [x] Semantic search works
+- [x] Metadata filtering works
+- [x] Hybrid retrieval works
+- [x] Retrieved questions can be inspected
+- [x] Retrieved questions can be passed to the LLM
+
+Completed: 2026-09-28
+
+Verified: `internal/embeddings/service.go` (`EmbedDocument`), `internal/search/service.go` + `repository.go` (vector), `internal/search/hybrid.go` + `keyword.go` (metadata filtering, hybrid/RRF), `internal/http/debug_retrieval.go` (`/debug/retrieval`), `pages/debug/retrieval.tsx`, `internal/quiz/prompt.go` (`BuildQuizPrompt`/`ToSourceBlocks`); `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 ---
 
 ## Frontend
 
-- [ ] Upload page works
-- [ ] Document library works
-- [ ] Document details work
-- [ ] Topics can be selected
-- [ ] Quiz can be configured
-- [ ] Quiz works
-- [ ] Results work
-- [ ] Original PYQs can be viewed
+- [x] Upload page works
+- [x] Document library works
+- [x] Document details work
+- [x] Topics can be selected
+- [x] Quiz can be configured
+- [x] Quiz works
+- [x] Results work
+- [x] Original PYQs can be viewed
+
+Completed: 2026-09-28
+
+Verified: `pages/documents/index.tsx` (upload via `components/Upload.tsx` + library), `pages/documents/[id].tsx` (`getDocument` + questions/images/topics + Delete button), `pages/topics/index.tsx` + `[id].tsx`, `components/quiz/QuizSetupForm.tsx`, `pages/quiz/index.tsx` + `QuizQuestionCard` + `QuizResults`, `components/quiz/SourceTraceability.tsx` (View Original); `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 ---
 
 ## AI
 
-- [ ] Structured LLM responses work
-- [ ] Invalid output is handled
-- [ ] Embedding failures are handled
-- [ ] AI calls have timeouts
-- [ ] AI calls can be retried
-- [ ] Model configuration is environment-based
+- [x] Structured LLM responses work
+- [x] Invalid output is handled
+- [x] Embedding failures are handled
+- [x] AI calls have timeouts
+- [x] AI calls can be retried
+- [x] Model configuration is environment-based
+
+Completed: 2026-09-28
+
+Verified: `internal/llm/openai.go` (structured `ClassifyTopics`/`GenerateQuiz` JSON + validation, 15s timeout, `OPENAI_MODEL` via `config.ChatModel` wired in `cmd/api`+`cmd/worker`), `internal/quiz/validate.go` + `service.go` (invalid-output fallback `BuildOriginalQuiz`, retries), `internal/embeddings/service.go`+`openai.go` (per-item failures, retry w/ backoff, 30s timeout), `internal/topics/classifier.go` (3-try retry); `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 ---
 
 ## Docker
 
-- [ ] PostgreSQL runs through Docker Compose
-- [ ] Redis runs through Docker Compose
-- [ ] Backend has production Dockerfile
-- [ ] Worker has production Dockerfile
-- [ ] Frontend has production Dockerfile
-- [ ] Entire stack runs with Docker Compose
-- [ ] Containers use non-root users
-- [ ] Healthchecks work
-- [ ] Data persists across container restarts
+- [x] PostgreSQL runs through Docker Compose
+- [x] Redis runs through Docker Compose
+- [x] Backend has production Dockerfile
+- [x] Worker has production Dockerfile
+- [x] Frontend has production Dockerfile
+- [x] Entire stack runs with Docker Compose
+- [x] Containers use non-root users
+- [x] Healthchecks work
+- [x] Data persists across container restarts
+
+Completed: 2026-09-28
+
+Verified: `docker-compose.yml` (db/redis/api/worker/web, `db_data`/`redis_data`/`app_data` volumes, healthchecks), `Dockerfile.api`/`Dockerfile.worker`/`Dockerfile.web` (multi-stage, non-root `appuser`, HEALTHCHECK), `Makefile` `prod-build/prod-up`; `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 ---
 
@@ -273,12 +301,16 @@ PostgreSQL
 
 Checklist:
 
-- [ ] Docker PostgreSQL
-- [ ] Go server
-- [ ] Next.js
-- [ ] Database connection
-- [ ] Health endpoint
-- [ ] Basic UI
+- [x] Docker PostgreSQL
+- [x] Go server
+- [x] Next.js
+- [x] Database connection
+- [x] Health endpoint
+- [x] Basic UI
+
+Completed: 2026-09-28
+
+Verified: `docker-compose.yml` db + `Makefile db-up`, `cmd/api/main.go`, `pages/index.tsx`, `internal/database/db.go`, `internal/http/health.go` + `router.go`; `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 ---
 
@@ -298,11 +330,15 @@ PostgreSQL metadata
 
 Checklist:
 
-- [ ] Upload
-- [ ] Store
-- [ ] List
-- [ ] Delete
-- [ ] View document
+- [x] Upload
+- [x] Store
+- [x] List
+- [x] Delete
+- [x] View document
+
+Completed: 2026-09-28
+
+Verified: `internal/http/documents.go` (`uploadDocument`/`listDocuments` + `GET/DELETE /documents/{id}`), `internal/documents/service.go` (`Upload/Get/Delete`) + `repository.go`, `lib/api.ts` (`uploadDocument/listDocuments/getDocument/deleteDocument`), `pages/documents/index.tsx` + `pages/documents/[id].tsx` (detail + Delete button); `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 ---
 
@@ -322,11 +358,15 @@ PostgreSQL
 
 Checklist:
 
-- [ ] Text extraction
-- [ ] Question detection
-- [ ] Page tracking
-- [ ] Database storage
-- [ ] Question viewer
+- [x] Text extraction
+- [x] Question detection
+- [x] Page tracking
+- [x] Database storage
+- [x] Question viewer
+
+Completed: 2026-09-28
+
+Verified: `internal/extraction/service.go` + `question_extractor.go` (incl. multi-page merge), `internal/questions/repository.go` (`Insert/BatchInsert`), `internal/http/questions.go`, `pages/documents/[id].tsx` (`QuestionCard`); `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 At this point you already have a useful non-AI application.
 
@@ -346,10 +386,14 @@ Question
 
 Checklist:
 
-- [ ] Extract images
-- [ ] Associate images
-- [ ] Store images
-- [ ] Display images
+- [x] Extract images
+- [x] Associate images
+- [x] Store images
+- [x] Display images
+
+Completed: 2026-09-28
+
+Verified: `internal/extraction/image.go` (pdfimages/Go parser, filesystem store), `internal/extraction/question_extractor.go` (`refineImageAssociation`/`images_json`), `internal/http/images.go`, `pages/documents/[id].tsx` (images grid); `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 ---
 
@@ -367,10 +411,14 @@ Topic
 
 Checklist:
 
-- [ ] Topic extraction
-- [ ] Topic normalization
-- [ ] Topic database
-- [ ] Topic UI
+- [x] Topic extraction
+- [x] Topic normalization
+- [x] Topic database
+- [x] Topic UI
+
+Completed: 2026-09-28
+
+Verified: `internal/topics/classifier.go` (+ heuristic fallback), `internal/topics/normalize.go`, `internal/topics/repository.go`, `pages/topics/index.tsx` + `pages/topics/[id].tsx`; `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 ---
 
@@ -388,10 +436,14 @@ pgvector
 
 Checklist:
 
-- [ ] Embed questions
-- [ ] Store vectors
-- [ ] Query vectors
-- [ ] Display search results
+- [x] Embed questions
+- [x] Store vectors
+- [x] Query vectors
+- [x] Display search results
+
+Completed: 2026-09-28
+
+Verified: `internal/embeddings/service.go` (`EmbedDocument` + retry), `internal/embeddings/repository.go` (`Upsert`), `internal/search/service.go` + `repository.go`, `pages/debug/retrieval.tsx`; `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 ---
 
@@ -413,11 +465,15 @@ LLM
 
 Checklist:
 
-- [ ] Query embedding
-- [ ] Retrieval
-- [ ] Metadata filtering
-- [ ] Context construction
-- [ ] LLM generation
+- [x] Query embedding
+- [x] Retrieval
+- [x] Metadata filtering
+- [x] Context construction
+- [x] LLM generation
+
+Completed: 2026-09-28
+
+Verified: `internal/search/service.go` (query embedding), `internal/search/repository.go` + `hybrid.go` + `keyword.go`, `internal/quiz/prompt.go` (`ToSourceBlocks`/`BuildQuizPrompt`), `internal/llm/openai.go` (`GenerateQuiz`, `OPENAI_MODEL` env-based); `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 ---
 
@@ -437,12 +493,16 @@ Retrieved questions
 
 Checklist:
 
-- [ ] Quiz schema
-- [ ] Generation
-- [ ] Quiz UI
-- [ ] Answers
-- [ ] Scoring
-- [ ] Results
+- [x] Quiz schema
+- [x] Generation
+- [x] Quiz UI
+- [x] Answers
+- [x] Scoring
+- [x] Results
+
+Completed: 2026-09-28
+
+Verified: `lib/api.ts` (`QuizQuestion`/`QuizResponse`, `generateQuiz`), `pages/quiz/index.tsx` + `components/quiz/QuizSetupForm.tsx` + `QuizQuestionCard.tsx` + `QuizResults.tsx`, `internal/quiz/service.go` + `validate.go`; `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 ---
 
@@ -460,12 +520,16 @@ Worker
 
 Checklist:
 
-- [ ] Redis
-- [ ] Worker
-- [ ] Processing jobs
-- [ ] Retries
-- [ ] Progress
-- [ ] Failure handling
+- [x] Redis
+- [x] Worker
+- [x] Processing jobs
+- [x] Retries
+- [x] Progress
+- [x] Failure handling
+
+Completed: 2026-09-28
+
+Verified: `docker-compose.yml` redis (appendonly), `cmd/worker/main.go` + `Dockerfile.worker`, `internal/jobs/store.go` (`Enqueue`/`UpdateProgress`) + `runner.go` (retry/backoff, `StatusFailed`) + `asynq.go`, `migrations/008_add_jobs.sql`; `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 ---
 
@@ -475,14 +539,18 @@ Now make the RAG actually good.
 
 Checklist:
 
-- [ ] Evaluation dataset
-- [ ] Vector baseline
-- [ ] Metadata baseline
-- [ ] Hybrid search
-- [ ] Reranking
-- [ ] Precision measurements
-- [ ] Recall measurements
-- [ ] Tune retrieval
+- [x] Evaluation dataset
+- [x] Vector baseline
+- [x] Metadata baseline
+- [x] Hybrid search
+- [x] Reranking
+- [x] Precision measurements
+- [x] Recall measurements
+- [x] Tune retrieval
+
+Completed: 2026-09-28
+
+Verified: `internal/search/evaluation_dataset.go` (60 queries) + `evaluation.go` (precision/recall/top-K) + `evaluation_runner.go` (all strategies incl. `hybrid+reranker`, `BestByRecall`), `internal/http/search_eval.go` (`/debug/eval`), `pages/debug/eval.tsx` (results table + best verdict) linked from `pages/debug/retrieval.tsx`, `lib/api.ts` (`getDebugEval`); `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 ---
 
@@ -517,17 +585,21 @@ Final local architecture:
 
 Checklist:
 
-- [ ] Docker Compose
-- [ ] PostgreSQL
-- [ ] Redis
-- [ ] API container
-- [ ] Worker container
-- [ ] Frontend container
-- [ ] Persistent volumes
-- [ ] Healthchecks
-- [ ] Environment configuration
-- [ ] Production builds
-- [ ] Full local startup with one command
+- [x] Docker Compose
+- [x] PostgreSQL
+- [x] Redis
+- [x] API container
+- [x] Worker container
+- [x] Frontend container
+- [x] Persistent volumes
+- [x] Healthchecks
+- [x] Environment configuration
+- [x] Production builds
+- [x] Full local startup with one command
+
+Completed: 2026-09-28
+
+Verified: `docker-compose.yml` (db/redis/api/worker/web, volumes, healthchecks, env incl. `OPENAI_MODEL`), `Dockerfile.api`/`Dockerfile.worker`/`Dockerfile.web`, `internal/config/config.go`, `Makefile` `prod-up` (`docker compose up -d --build`); `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 ---
 

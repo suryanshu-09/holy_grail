@@ -56,6 +56,14 @@ func (r *fakeRepo) UpdateStatus(_ context.Context, id string, status string) err
 	return nil
 }
 
+func (r *fakeRepo) Delete(_ context.Context, id string) error {
+	if _, ok := r.docs[id]; !ok {
+		return apperr.ErrNotFound
+	}
+	delete(r.docs, id)
+	return nil
+}
+
 // fakeQuestionsRepo is a minimal in-memory implementation of questions.Repository
 // used by extraction pipeline tests to assert that questions are persisted.
 type fakeQuestionsRepo struct {

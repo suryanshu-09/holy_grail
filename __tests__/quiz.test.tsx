@@ -24,7 +24,7 @@ describe('Quiz interaction (setup form)', () => {
   it('maps topic text to topic + topics fields', () => {
     const onSubmit = vi.fn();
     render(<QuizSetupForm onSubmit={onSubmit} />);
-    fireEvent.change(screen.getByLabelText(/topic/i), { target: { value: 'Algebra' } });
+    fireEvent.change(screen.getByLabelText(/^topic/i), { target: { value: 'Algebra' } });
     fireEvent.change(screen.getByLabelText(/subject/i), { target: { value: 'Mathematics' } });
     fireEvent.click(screen.getByRole('button', { name: /generate quiz/i }));
     expect(onSubmit).toHaveBeenCalledWith(

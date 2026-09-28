@@ -222,3 +222,17 @@ func (r *repository) GetByID(ctx context.Context, id string) (Document, error) {
 	}
 	return d, nil
 }
+
+// Delete removes a document row. Dependent rows (questions, jobs) are
+// removed by ON DELETE CASCADE foreign keys. Returns apperr.ErrNotFound
+// when the id is unknown.
+func (r *repository) Delete(ctx context.Context, id string) error {
+	res, err := r.db.ExecContext(ctx, "DELETE FROM documents WHERE id = $1", id)
+	if err != nil {
+		return fmt.Errorf("documents: delete: %w", err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return apperr.ErrNotFound
+	}
+	return nil
+}

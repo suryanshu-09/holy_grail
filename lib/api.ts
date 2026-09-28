@@ -306,6 +306,28 @@ export async function listDocuments(filters?: DocumentFilters): Promise<Document
   );
 }
 
+export async function getDocument(id: string): Promise<Document> {
+  if (!id || !id.trim()) throw new Error('document id is required');
+  return request<Document>(`${BASE_URL}/documents/${encodeURIComponent(id)}`);
+}
+
+export async function deleteDocument(id: string): Promise<void> {
+  if (!id || !id.trim()) throw new Error('document id is required');
+  const res = await fetch(`${BASE_URL}/documents/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok && res.status !== 204) {
+    const body = await res.text();
+    try {
+      const parsed = JSON.parse(body) as ApiErrorBody;
+      if (parsed.error?.message) throw new Error(parsed.error.message);
+    } catch (e) {
+      if (e instanceof Error && e.message !== body) throw e;
+    }
+    throw new Error(`Delete failed: ${res.status} ${res.statusText}`);
+  }
+}
+
 export async function listTopics(filters?: TopicFilters): Promise<Topic[]> {
   return request<Topic[]>(
     buildUrl('/topics', {

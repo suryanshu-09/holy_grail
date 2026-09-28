@@ -4,7 +4,7 @@ import { useRouter } from 'next/router'
 import { EmptyState, ErrorState, LoadingState } from '../../components/ui'
 import { QuestionCard } from '../../components/QuestionCard'
 import { ProcessingStatus } from '../../components/ProcessingStatus'
-import { listDocuments, listQuestions, listTopicsForQuestion, classifyDocument, embedDocument, extractDocument, enqueueProcessDocument, getProcessingStatus, getBaseUrl, type Document, type Question, type Topic, type DocumentImage, type ProcessingStatus as ProcessingStatusData } from '../../lib/api'
+import { getDocument, deleteDocument, listQuestions, listTopicsForQuestion, classifyDocument, embedDocument, extractDocument, enqueueProcessDocument, getProcessingStatus, getBaseUrl, type Document, type Question, type Topic, type DocumentImage, type ProcessingStatus as ProcessingStatusData } from '../../lib/api'
 
 const statusStyles: Record<string, string> = {
   uploaded: 'bg-gray-100 text-gray-700',
@@ -53,14 +53,28 @@ export default function DocumentDetailPage() {
     setLoading(true)
     setError(null)
     try {
-      const documents = await listDocuments({ limit: 100 })
-      setDocument(documents.find((doc) => doc.id === id) ?? null)
+      const doc = await getDocument(id)
+      setDocument(doc)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load document.')
     } finally {
       setLoading(false)
     }
   }, [id])
+
+  const [deleting, setDeleting] = useState(false)
+  const handleDelete = useCallback(async () => {
+    if (typeof id !== 'string' || deleting) return
+    if (!window.confirm('Delete this document and its questions? This cannot be undone.')) return
+    setDeleting(true)
+    try {
+      await deleteDocument(id)
+      router.push('/documents')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to delete document.')
+      setDeleting(false)
+    }
+  }, [id, deleting, router])
 
   const loadQuestions = useCallback(async () => {
     if (typeof id !== 'string') return
@@ -352,6 +366,13 @@ export default function DocumentDetailPage() {
             className="rounded border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
           >
             Refresh
+          </button>
+          <button
+            onClick={handleDelete}
+            disabled={deleting}
+            className="rounded border border-red-300 px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50 disabled:opacity-50"
+          >
+            {deleting ? 'Deleting…' : 'Delete'}
           </button>
         </div>
         {extractMsg && <p className="mt-3 text-sm text-gray-600">{extractMsg}</p>}
