@@ -74,6 +74,10 @@ Only consider these after the core application is stable.
 - [x] Personalized quizzes
 - [x] Question difficulty estimation
 
+Completed: 2026-09-28
+
+Verified: `internal/quiz/adaptive.go` (EstimateDifficulty/AdjustDifficulty/WeightByWeakTopics/SM-2 ScheduleReviews/DueQuestions/BuildPersonalizedRequest + `AdaptiveOptions` on `QuizRequest`, nil = legacy) wired into `internal/http/quiz.go` GET+POST (`adaptive/weak_topics/review_due` + tuning params, defaults off); `QuizSetupForm` adaptive toggle + quiz page Study Mode links; `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
+
 ---
 
 ## Advanced Retrieval
@@ -85,6 +89,10 @@ Only consider these after the core application is stable.
 - [x] Parent-child retrieval
 - [x] Contextual retrieval
 
+Completed: 2026-09-28
+
+Verified: `internal/search/advanced.go` (`AdvancedFilter` embedding `HybridFilter` + RewriteQuery/BuildQueryVariants/FuseMultiQuery/GroupByDocument/BuildContextualQuery/EnrichResults/TokenOverlap+Chained rerankers) wired into `internal/http/search.go` GET+POST (`rewrite/multi_query/parent_child/contextual`, defaults off, backward-compat envelopes); `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
+
 ---
 
 ## Multimodal
@@ -95,6 +103,10 @@ Only consider these after the core application is stable.
 - [x] Table understanding
 - [x] Mathematical expression understanding
 
+Completed: 2026-09-28
+
+Verified: `internal/multimodal` (diagram classification, table parse/summarize, math extract/normalize) surfaced via `internal/extraction/multimodal_display.go` + quiz `BuildOriginalQuiz` enrichment and `internal/study` summary; `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
+
 ---
 
 ## Analytics
@@ -104,6 +116,10 @@ Only consider these after the core application is stable.
 - [x] Question difficulty
 - [x] Time per question
 - [x] Exam readiness score
+
+Completed: 2026-09-28
+
+Verified: `internal/analytics` pure stats + `internal/http/analytics.go` (`/analytics/mastery|history|difficulty|timing|readiness`, nil-safe) + `lib/api.ts` analytics client; `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 ---
 
@@ -122,6 +138,14 @@ PYQs
  ↓
 Quiz
 ```
+
+- [x] Study guide endpoint (Topic → Explanation → Example → PYQs → Quiz)
+- [x] Study guide page with step indicator + quiz link
+- [x] Weak-topic flag + subject resolution + deterministic quiz fallback
+
+Completed: 2026-09-28
+
+Verified: `internal/study` (BuildStudyGuide) + `internal/http/study.go` (`GET/POST /api/v1/study/guide`, nil-safe) + `pages/study.tsx` + quiz↔study cross-links; `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 - [x] Topic explanation
 - [x] Worked example

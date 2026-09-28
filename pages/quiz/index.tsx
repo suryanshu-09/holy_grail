@@ -253,6 +253,12 @@ export default function QuizPage() {
           error={error}
           onSubmit={startQuiz}
         />
+        <p className="mt-4 text-center text-sm text-gray-500">
+          Want a guided flow first?{' '}
+          <Link href="/study" className="font-medium text-blue-600 hover:underline">
+            Open Study Mode (Topic → Explanation → Example → PYQs → Quiz)
+          </Link>
+        </p>
       </div>
     )
   }
@@ -396,6 +402,12 @@ export default function QuizPage() {
             className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
           >
             Back to dashboard
+          </Link>
+          <Link
+            href="/study"
+            className="rounded border border-blue-300 px-4 py-2 text-sm text-blue-700 hover:bg-blue-50"
+          >
+            Study weak topics
           </Link>
         </div>
       </div>

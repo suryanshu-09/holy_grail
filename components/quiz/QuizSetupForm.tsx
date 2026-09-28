@@ -59,6 +59,8 @@ export function QuizSetupForm({ initial, loading = false, error, onSubmit, class
   );
   const [onlyUnseen, setOnlyUnseen] = useState<boolean>(initial?.only_unseen ?? false);
   const [onlyIncorrect, setOnlyIncorrect] = useState<boolean>(initial?.only_incorrect ?? false);
+  // Phase 27 smart-quiz personalization (default off for backward compat).
+  const [adaptive, setAdaptive] = useState<boolean>(initial?.adaptive ?? false);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -82,6 +84,8 @@ export function QuizSetupForm({ initial, loading = false, error, onSubmit, class
     if (!Number.isNaN(parsedMax)) filters.year_max = Math.round(parsedMax);
     if (onlyUnseen) filters.only_unseen = true;
     if (onlyIncorrect) filters.only_incorrect = true;
+    // Phase 27 adaptive quiz (weak-topic weighting + spaced-repetition prefs).
+    if (adaptive) filters.adaptive = true;
     // Passthrough for pre-filtered source IDs when provided via initial filters.
     if (initial?.exclude_source_ids?.length) filters.exclude_source_ids = initial.exclude_source_ids;
     if (initial?.only_source_ids?.length) filters.only_source_ids = initial.only_source_ids;
@@ -265,6 +269,18 @@ export function QuizSetupForm({ initial, loading = false, error, onSubmit, class
               className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
             />
             Only incorrect questions
+          </label>
+        </div>
+        <div className="flex items-end gap-6 pb-1 sm:col-span-2">
+          <label htmlFor="quiz-adaptive" className="flex items-center gap-2 text-sm text-gray-700">
+            <input
+              id="quiz-adaptive"
+              type="checkbox"
+              checked={adaptive}
+              onChange={(e) => setAdaptive(e.target.checked)}
+              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            Adaptive quiz (weak-topic weighting + review)
           </label>
         </div>
       </div>

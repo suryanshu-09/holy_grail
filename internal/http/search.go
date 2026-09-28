@@ -53,6 +53,16 @@ type searchRequest struct {
 	Debug             *bool    `json:"debug"`
 	IncludeDebug      *bool    `json:"include_debug"`
 	IncludeDebugAlt   *bool    `json:"includeDebug"`
+	// Phase 27 advanced-retrieval flags (all optional, defaults off for
+	// backward compat). They map onto search.AdvancedFilter: rewrite expands
+	// synonyms, multi_query fans out + RRF-fuses, parent_child groups hits by
+	// document, contextual prefixes filter context into the query.
+	Rewrite          *bool `json:"rewrite"`
+	MultiQuery       *bool `json:"multi_query"`
+	MultiQueryAlt    *bool `json:"multiQuery"`
+	ParentChild      *bool `json:"parent_child"`
+	ParentChildAlt   *bool `json:"parentChild"`
+	Contextual       *bool `json:"contextual"`
 }
 
 func (r *searchRequest) effectiveQuery() string {
@@ -126,6 +136,17 @@ func (r *searchRequest) effectiveDebug() bool {
 		return true
 	}
 	return false
+}
+
+// effectiveAdvanced folds the Phase 27 body flags into a search.AdvancedFilter.
+// All flags default off (nil = false) so legacy requests are unaffected.
+func (r *searchRequest) effectiveAdvanced() search.AdvancedFilter {
+	return search.AdvancedFilter{
+		Rewrite:     r.Rewrite != nil && *r.Rewrite,
+		MultiQuery:  (r.MultiQuery != nil && *r.MultiQuery) || (r.MultiQueryAlt != nil && *r.MultiQueryAlt),
+		ParentChild: (r.ParentChild != nil && *r.ParentChild) || (r.ParentChildAlt != nil && *r.ParentChildAlt),
+		Contextual:  r.Contextual != nil && *r.Contextual,
+	}
 }
 
 // normalizeMode validates the retrieval mode. Empty defaults to "vector"
@@ -215,6 +236,8 @@ func handleSearch(searcher Searcher, hybridOpt ...HybridSearcher) http.Handler {
 		var keywordWeight *float64
 		var rerank bool
 		var includeDebug bool
+		// Phase 27 advanced retrieval (defaults off for backward compat).
+		var adv search.AdvancedFilter
 
 		if r.Method == http.MethodGet {
 			q := r.URL.Query()
@@ -254,6 +277,35 @@ func handleSearch(searcher Searcher, hybridOpt ...HybridSearcher) http.Handler {
 			}
 			if db != nil {
 				includeDebug = *db
+			}
+			// Phase 27 advanced-retrieval flags (all optional, default false).
+			rwb, ok := parseOptionalBool(vals, []string{"rewrite"}, "rewrite", w)
+			if !ok {
+				return
+			}
+			if rwb != nil {
+				adv.Rewrite = *rwb
+			}
+			mqb, ok := parseOptionalBool(vals, []string{"multi_query", "multiQuery"}, "multi_query", w)
+			if !ok {
+				return
+			}
+			if mqb != nil {
+				adv.MultiQuery = *mqb
+			}
+			pcb, ok := parseOptionalBool(vals, []string{"parent_child", "parentChild"}, "parent_child", w)
+			if !ok {
+				return
+			}
+			if pcb != nil {
+				adv.ParentChild = *pcb
+			}
+			cxb, ok := parseOptionalBool(vals, []string{"contextual"}, "contextual", w)
+			if !ok {
+				return
+			}
+			if cxb != nil {
+				adv.Contextual = *cxb
 			}
 			filter.Subject = q.Get("subject")
 			filter.Topic = q.Get("topic")
@@ -360,6 +412,7 @@ func handleSearch(searcher Searcher, hybridOpt ...HybridSearcher) http.Handler {
 			keywordWeight = req.effectiveKeywordWeight()
 			rerank = req.effectiveRerank()
 			includeDebug = req.effectiveDebug()
+			adv = req.effectiveAdvanced()
 			filter.Subject = req.Subject
 			filter.Topic = req.Topic
 			filter.TopicID = req.effectiveTopicID()
@@ -418,6 +471,19 @@ func handleSearch(searcher Searcher, hybridOpt ...HybridSearcher) http.Handler {
 			return
 		}
 
+		// Phase 27 advanced retrieval preprocessing (defaults off).
+		// Rewrite expands synonyms deterministically; contextual prefixes the
+		// active metadata filters into the query. Both preserve the legacy
+		// query when disabled.
+		if adv.Rewrite {
+			if rw := search.RewriteQuery(query); strings.TrimSpace(rw.Expanded) != "" {
+				query = rw.Expanded
+			}
+		}
+		if adv.Contextual {
+			query = search.BuildContextualQuery(query, filter.Subject, filter.Topic, filter.DocumentID)
+		}
+
 		// Dispatch: vector is the default (Phase 11 preserved). Hybrid/keyword
 		// modes require the hybrid searcher; fall back to vector-only when it
 		// is unavailable (no keyword/embedder configured).
@@ -439,6 +505,47 @@ func handleSearch(searcher Searcher, hybridOpt ...HybridSearcher) http.Handler {
 			if keyword != "" {
 				hf.KeywordQuery = keyword
 			}
+			// Multi-query fans out over deterministic variants + RRF-fuses.
+			if adv.MultiQuery {
+				variants := search.BuildQueryVariants(query, []string{filter.Topic, filter.Subject})
+				if len(variants) == 0 {
+					variants = []string{query}
+				}
+				lists := make([][]search.HybridResult, 0, len(variants))
+				for _, v := range variants {
+					hresp, err := hybrid.Search(r.Context(), v, hf)
+					if err != nil {
+						msg := err.Error()
+						if strings.Contains(msg, "threshold") || strings.Contains(msg, "query is required") || strings.Contains(msg, "dimension") || strings.Contains(msg, "weight") {
+							httpx.Error(w, http.StatusBadRequest, msg)
+							return
+						}
+						httpx.LogError("hybrid search failed", err)
+						httpx.Error(w, http.StatusInternalServerError, "search failed")
+						return
+					}
+					lists = append(lists, hresp.Results)
+				}
+				fused := search.FuseMultiQuery(lists, search.DefaultRRFK)
+				if adv.ParentChild {
+					httpx.WriteJSON(w, http.StatusOK, search.GroupByDocument(query, fused))
+					return
+				}
+				// Respect the requested limit on the fused list.
+				limit := filter.Limit
+				if limit <= 0 {
+					limit = 10
+				}
+				if len(fused) > limit {
+					fused = fused[:limit]
+				}
+				httpx.WriteJSON(w, http.StatusOK, search.HybridResponse{
+					Query:   query,
+					Results: fused,
+					Count:   len(fused),
+				})
+				return
+			}
 			resp, err := hybrid.Search(r.Context(), query, hf)
 			if err != nil {
 				msg := err.Error()
@@ -453,12 +560,73 @@ func handleSearch(searcher Searcher, hybridOpt ...HybridSearcher) http.Handler {
 			if !includeDebug {
 				resp.Debug = nil
 			}
+			if adv.ParentChild {
+				httpx.WriteJSON(w, http.StatusOK, search.GroupByDocument(query, resp.Results))
+				return
+			}
 			httpx.WriteJSON(w, http.StatusOK, resp)
 			return
 		}
 
 		if searcher == nil {
 			httpx.Error(w, http.StatusServiceUnavailable, "search not configured (missing embedding pipeline)")
+			return
+		}
+
+		// Multi-query over the vector searcher: fan out, merge, dedupe by
+		// question ID (first-seen wins), cap at the requested limit.
+		if adv.MultiQuery {
+			variants := search.BuildQueryVariants(query, []string{filter.Topic, filter.Subject})
+			if len(variants) == 0 {
+				variants = []string{query}
+			}
+			seen := make(map[string]struct{})
+			merged := make([]search.Result, 0)
+			for _, v := range variants {
+				sresp, err := searcher.Search(r.Context(), v, filter)
+				if err != nil {
+					msg := err.Error()
+					if strings.Contains(msg, "threshold") || strings.Contains(msg, "query is required") || strings.Contains(msg, "dimension") {
+						httpx.Error(w, http.StatusBadRequest, msg)
+						return
+					}
+					httpx.LogError("search failed", err)
+					httpx.Error(w, http.StatusInternalServerError, "search failed")
+					return
+				}
+				for _, hit := range sresp.Results {
+					if _, dup := seen[hit.Question.ID]; dup {
+						continue
+					}
+					seen[hit.Question.ID] = struct{}{}
+					merged = append(merged, hit)
+				}
+			}
+			limit := filter.Limit
+			if limit <= 0 {
+				limit = 10
+			}
+			if len(merged) > limit {
+				merged = merged[:limit]
+			}
+			if adv.ParentChild {
+				hyb := make([]search.HybridResult, 0, len(merged))
+				for _, hit := range merged {
+					hyb = append(hyb, search.HybridResult{
+						Question:      hit.Question,
+						VectorScore:   hit.Similarity,
+						CombinedScore: hit.Similarity,
+						Sources:       []string{"vector"},
+					})
+				}
+				httpx.WriteJSON(w, http.StatusOK, search.GroupByDocument(query, hyb))
+				return
+			}
+			httpx.WriteJSON(w, http.StatusOK, search.Response{
+				Query:   query,
+				Results: merged,
+				Count:   len(merged),
+			})
 			return
 		}
 
@@ -472,6 +640,19 @@ func handleSearch(searcher Searcher, hybridOpt ...HybridSearcher) http.Handler {
 			}
 			httpx.LogError("search failed", err)
 			httpx.Error(w, http.StatusInternalServerError, "search failed")
+			return
+		}
+		if adv.ParentChild {
+			hyb := make([]search.HybridResult, 0, len(resp.Results))
+			for _, hit := range resp.Results {
+				hyb = append(hyb, search.HybridResult{
+					Question:      hit.Question,
+					VectorScore:   hit.Similarity,
+					CombinedScore: hit.Similarity,
+					Sources:       []string{"vector"},
+				})
+			}
+			httpx.WriteJSON(w, http.StatusOK, search.GroupByDocument(query, hyb))
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, resp)

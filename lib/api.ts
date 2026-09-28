@@ -124,6 +124,11 @@ export interface SearchFilters {
   threshold?: number;
   limit?: number;
   offset?: number;
+  // Phase 27 advanced retrieval (all optional, defaults off for backward compat).
+  rewrite?: boolean;
+  multi_query?: boolean;
+  parent_child?: boolean;
+  contextual?: boolean;
 }
 
 export interface SearchResult {
@@ -252,6 +257,15 @@ export interface QuizFilters {
   only_incorrect?: boolean;
   exclude_source_ids?: string[];
   only_source_ids?: string[];
+  // Phase 27 smart-quiz personalization (all optional, defaults off).
+  adaptive?: boolean;
+  weak_topics?: string[];
+  review_due?: string[];
+  weak_threshold?: number;
+  weak_topic_boost?: number;
+  prefer_unseen?: boolean;
+  prefer_incorrect?: boolean;
+  skip_due_review?: boolean;
 }
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8080/api/v1';
@@ -436,7 +450,7 @@ export async function mergeTopics(targetId: string, sourceIds: string[]): Promis
 
 export async function searchQuestions(query: string, filters?: SearchFilters): Promise<SearchResponse> {
   if (!query || !query.trim()) throw new Error('query is required');
-  const res = await fetch(buildUrl('/search', { q: query, ...filters } as Record<string, string | number | undefined>));
+  const res = await fetch(buildUrl('/search', { q: query, ...filters } as Record<string, string | number | boolean | undefined>));
   if (!res.ok) {
     const body = await res.text();
     try {
@@ -651,6 +665,15 @@ function buildQuizBody(filters?: QuizFilters): Record<string, unknown> {
   if (filters.only_incorrect !== undefined) body.only_incorrect = filters.only_incorrect;
   if (filters.exclude_source_ids !== undefined) body.exclude_source_ids = filters.exclude_source_ids;
   if (filters.only_source_ids !== undefined) body.only_source_ids = filters.only_source_ids;
+  // Phase 27 smart-quiz knobs (defaults off; omitted when unset).
+  if (filters.adaptive !== undefined) body.adaptive = filters.adaptive;
+  if (filters.weak_topics !== undefined) body.weak_topics = filters.weak_topics;
+  if (filters.review_due !== undefined) body.review_due = filters.review_due;
+  if (filters.weak_threshold !== undefined) body.weak_threshold = filters.weak_threshold;
+  if (filters.weak_topic_boost !== undefined) body.weak_topic_boost = filters.weak_topic_boost;
+  if (filters.prefer_unseen !== undefined) body.prefer_unseen = filters.prefer_unseen;
+  if (filters.prefer_incorrect !== undefined) body.prefer_incorrect = filters.prefer_incorrect;
+  if (filters.skip_due_review !== undefined) body.skip_due_review = filters.skip_due_review;
   return body;
 }
 
@@ -678,6 +701,13 @@ export async function generateQuizGet(filters?: QuizFilters): Promise<QuizRespon
   if (filters?.year_max !== undefined) params.year_max = filters.year_max;
   if (filters?.only_unseen !== undefined) params.only_unseen = filters.only_unseen ? 'true' : 'false';
   if (filters?.only_incorrect !== undefined) params.only_incorrect = filters.only_incorrect ? 'true' : 'false';
+  // Phase 27 smart-quiz GET params (defaults off; omitted when unset).
+  if (filters?.adaptive !== undefined) params.adaptive = filters.adaptive ? 'true' : 'false';
+  if (filters?.weak_threshold !== undefined) params.weak_threshold = filters.weak_threshold;
+  if (filters?.weak_topic_boost !== undefined) params.weak_topic_boost = filters.weak_topic_boost;
+  if (filters?.prefer_unseen !== undefined) params.prefer_unseen = filters.prefer_unseen ? 'true' : 'false';
+  if (filters?.prefer_incorrect !== undefined) params.prefer_incorrect = filters.prefer_incorrect ? 'true' : 'false';
+  if (filters?.skip_due_review !== undefined) params.skip_due_review = filters.skip_due_review ? 'true' : 'false';
   const query = filters?.query ?? filters?.q;
   if (query) params.query = query;
   const url = new URL(`${BASE_URL}/quiz/generate`);
@@ -695,6 +725,17 @@ export async function generateQuizGet(filters?: QuizFilters): Promise<QuizRespon
   if (filters?.only_source_ids) {
     for (const id of filters.only_source_ids) {
       if (id && id.trim()) url.searchParams.append('only_source_ids', id);
+    }
+  }
+  // Phase 27 weak-topic / due-review merge lists (repeated params).
+  if (filters?.weak_topics) {
+    for (const t of filters.weak_topics) {
+      if (t && t.trim()) url.searchParams.append('weak_topics', t);
+    }
+  }
+  if (filters?.review_due) {
+    for (const id of filters.review_due) {
+      if (id && id.trim()) url.searchParams.append('review_due', id);
     }
   }
   for (const [key, value] of Object.entries(params)) {
