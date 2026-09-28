@@ -68,6 +68,10 @@ type QuizRequest struct {
 	// even when the retriever ignores them.
 	ExcludeSourceIDs []string `json:"exclude_source_ids,omitempty"`
 	OnlySourceIDs    []string `json:"only_source_ids,omitempty"`
+	// Adaptive carries optional smart-quiz personalization (Phase 27).
+	// Nil (the default) preserves legacy behavior; Validate checks it only
+	// when present, so existing requests are unaffected.
+	Adaptive *AdaptiveOptions `json:"adaptive,omitempty"`
 }
 
 // QuizQuestion is a single generated quiz item with source traceability.
@@ -146,6 +150,9 @@ func (r *QuizRequest) Validate() error {
 	}
 	r.ExcludeSourceIDs = cleanIDs(r.ExcludeSourceIDs)
 	r.OnlySourceIDs = cleanIDs(r.OnlySourceIDs)
+	if err := r.Adaptive.Validate(); err != nil {
+		return err
+	}
 	return nil
 }
 

@@ -105,6 +105,22 @@ func NewRouter(cfg *config.AppConfig, deps RouterDeps) http.Handler {
 	mux.Handle("POST "+APIVersion+"/auth/logout", handleLogout(deps.Auth, cfg.Env))
 	mux.Handle(APIVersion+"/auth/me", handleMe())
 	mux.Handle(APIVersion+"/users/me/preferences", handlePreferences(deps.Auth))
+	// Phase 27 analytics + study mode (nil-safe: handlers degrade to 503 or
+	// deterministic fallbacks when optional deps are missing).
+	analyticsDeps := AnalyticsDeps{Eval: deps.QuizEval, History: deps.QuizHistory}
+	if deps.Questions != nil {
+		analyticsDeps.Questions = deps.Questions
+	}
+	mux.Handle(APIVersion+"/analytics/mastery", handleAnalyticsMastery(analyticsDeps))
+	mux.Handle(APIVersion+"/analytics/history", handleAnalyticsHistory(analyticsDeps))
+	mux.Handle(APIVersion+"/analytics/difficulty", handleAnalyticsDifficulty(analyticsDeps))
+	mux.Handle(APIVersion+"/analytics/timing", handleAnalyticsTiming(analyticsDeps))
+	mux.Handle(APIVersion+"/analytics/readiness", handleAnalyticsReadiness(analyticsDeps))
+	studyDeps := StudyDeps{Searcher: deps.Searcher, Quiz: deps.Quiz}
+	if deps.Topics != nil {
+		studyDeps.Topics = deps.Topics
+	}
+	mux.Handle(APIVersion+"/study/guide", handleStudyGuide(studyDeps))
 
 	handler := auth.OptionalAuth(deps.Auth)(mux)
 	handler = auth.CSRFMiddleware(cfg.CORSAllowedOrigin)(handler)

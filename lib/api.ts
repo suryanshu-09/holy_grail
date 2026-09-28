@@ -1222,3 +1222,175 @@ export async function listQuizHistory(limit?: number, offset?: number): Promise<
   }
   return (await res.json()) as QuizSession[];
 }
+
+// Phase 27 analytics (GET /api/v1/analytics/mastery|history|difficulty|
+// timing|readiness, scoped by ?session_id= or the caller's recent sessions).
+
+export interface AnalyticsScope {
+  session_id?: string;
+  sessions: number;
+  attempts: number;
+}
+
+export interface TopicMasteryEntry {
+  topic: string;
+  attempted: number;
+  correct: number;
+  incorrect: number;
+  accuracy: number;
+  mastery: number;
+  level: string;
+}
+
+export interface MasteryResponse {
+  scope: AnalyticsScope;
+  topics: TopicMasteryEntry[];
+}
+
+export interface DailyAccuracy {
+  date: string;
+  attempted: number;
+  correct: number;
+  accuracy: number;
+}
+
+export interface HistoryResponse {
+  scope: AnalyticsScope;
+  days: DailyAccuracy[];
+}
+
+export interface DifficultyStatEntry {
+  difficulty: string;
+  attempted: number;
+  correct: number;
+  incorrect: number;
+  accuracy: number;
+  avg_time_seconds: number;
+}
+
+export interface DifficultyResponse {
+  scope: AnalyticsScope;
+  difficulties: DifficultyStatEntry[];
+}
+
+export interface TimingStats {
+  count: number;
+  avg_seconds: number;
+  median_seconds: number;
+  p90_seconds: number;
+}
+
+export interface TimingResponse {
+  scope: AnalyticsScope;
+  timing: TimingStats;
+}
+
+export interface ReadinessScore {
+  score: number;
+  band: string;
+  mastery: number;
+  accuracy: number;
+  coverage: number;
+  recency: number;
+}
+
+export interface ReadinessResponse {
+  scope: AnalyticsScope;
+  readiness: ReadinessScore;
+}
+
+export interface AnalyticsFilters {
+  session_id?: string;
+  limit?: number;
+  offset?: number;
+  total_topics?: number;
+}
+
+function analyticsParams(filters?: AnalyticsFilters): Record<string, string | number | undefined> {
+  const params: Record<string, string | number | undefined> = {};
+  if (filters?.session_id) params.session_id = filters.session_id;
+  if (filters?.limit !== undefined) params.limit = filters.limit;
+  if (filters?.offset !== undefined) params.offset = filters.offset;
+  if (filters?.total_topics !== undefined) params.total_topics = filters.total_topics;
+  return params;
+}
+
+export async function getTopicMastery(filters?: AnalyticsFilters): Promise<MasteryResponse> {
+  return request<MasteryResponse>(buildUrl('/analytics/mastery', analyticsParams(filters)));
+}
+
+export async function getAccuracyHistory(filters?: AnalyticsFilters): Promise<HistoryResponse> {
+  return request<HistoryResponse>(buildUrl('/analytics/history', analyticsParams(filters)));
+}
+
+export async function getDifficultyStats(filters?: AnalyticsFilters): Promise<DifficultyResponse> {
+  return request<DifficultyResponse>(buildUrl('/analytics/difficulty', analyticsParams(filters)));
+}
+
+export async function getTimingStats(filters?: AnalyticsFilters): Promise<TimingResponse> {
+  return request<TimingResponse>(buildUrl('/analytics/timing', analyticsParams(filters)));
+}
+
+export async function getReadiness(filters?: AnalyticsFilters): Promise<ReadinessResponse> {
+  return request<ReadinessResponse>(buildUrl('/analytics/readiness', analyticsParams(filters)));
+}
+
+// Phase 27 Study Mode (GET/POST /api/v1/study/guide):
+// Topic -> Explanation -> Example -> PYQs -> Quiz.
+
+export interface StudyPYQRef {
+  question_id: string;
+  document_id: string;
+  text: string;
+  year?: number | null;
+  subject?: string | null;
+}
+
+export interface StudyGuide {
+  topic: string;
+  subject?: string | null;
+  weak_topic: boolean;
+  explanation: string;
+  example: string;
+  key_points: string[];
+  pyq_refs: StudyPYQRef[];
+  summary?: string | null;
+  next_quiz: QuizResponse;
+}
+
+export interface StudyGuideFilters {
+  topic: string;
+  subject?: string;
+  limit?: number;
+  weak?: boolean;
+}
+
+export async function getStudyGuide(filters: StudyGuideFilters): Promise<StudyGuide> {
+  if (!filters?.topic || !filters.topic.trim()) throw new Error('topic is required');
+  return request<StudyGuide>(
+    buildUrl('/study/guide', {
+      topic: filters.topic,
+      subject: filters.subject,
+      limit: filters.limit,
+      weak: filters.weak,
+    })
+  );
+}
+
+export async function createStudyGuide(filters: StudyGuideFilters): Promise<StudyGuide> {
+  if (!filters?.topic || !filters.topic.trim()) throw new Error('topic is required');
+  const res = await fetch(`${BASE_URL}/study/guide`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      topic: filters.topic,
+      subject: filters.subject ?? '',
+      limit: filters.limit ?? 10,
+      weak: filters.weak ?? false,
+    }),
+  });
+  if (!res.ok) {
+    throw parseQuizSessionError('Study guide request', res.status, res.statusText, await res.text());
+  }
+  return (await res.json()) as StudyGuide;
+}

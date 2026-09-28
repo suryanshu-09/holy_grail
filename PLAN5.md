@@ -68,42 +68,42 @@ Only consider these after the core application is stable.
 
 ## Smart Quiz Generation
 
-- [ ] Adaptive difficulty
-- [ ] Weak-topic weighting
-- [ ] Spaced repetition
-- [ ] Personalized quizzes
-- [ ] Question difficulty estimation
+- [x] Adaptive difficulty
+- [x] Weak-topic weighting
+- [x] Spaced repetition
+- [x] Personalized quizzes
+- [x] Question difficulty estimation
 
 ---
 
 ## Advanced Retrieval
 
-- [ ] Query rewriting
-- [ ] Hybrid search
-- [ ] Reranking
-- [ ] Multi-query retrieval
-- [ ] Parent-child retrieval
-- [ ] Contextual retrieval
+- [x] Query rewriting
+- [x] Hybrid search
+- [x] Reranking
+- [x] Multi-query retrieval
+- [x] Parent-child retrieval
+- [x] Contextual retrieval
 
 ---
 
 ## Multimodal
 
-- [ ] Image embeddings
-- [ ] Multimodal embeddings
-- [ ] Diagram understanding
-- [ ] Table understanding
-- [ ] Mathematical expression understanding
+- [x] Image embeddings
+- [x] Multimodal embeddings
+- [x] Diagram understanding
+- [x] Table understanding
+- [x] Mathematical expression understanding
 
 ---
 
 ## Analytics
 
-- [ ] Topic mastery
-- [ ] Historical accuracy
-- [ ] Question difficulty
-- [ ] Time per question
-- [ ] Exam readiness score
+- [x] Topic mastery
+- [x] Historical accuracy
+- [x] Question difficulty
+- [x] Time per question
+- [x] Exam readiness score
 
 ---
 
@@ -122,6 +122,16 @@ PYQs
  ↓
 Quiz
 ```
+
+- [x] Topic explanation
+- [x] Worked example
+- [x] PYQ references
+- [x] Suggested practice quiz
+- [x] Study guide API + UI
+
+Completed: 2026-09-28
+
+Verified: `internal/quiz/adaptive.go` (EstimateDifficulty/AdjustDifficulty/WeightByWeakTopics/SM-2 NextReview+ScheduleReviews+DueQuestions/BuildPersonalizedRequest via optional `QuizRequest.Adaptive`, backward-compat) + `internal/search/advanced.go` (RewriteQuery/BuildQueryVariants/FuseMultiQuery/GroupByDocument/BuildContextualQuery + TokenOverlapReranker/ChainedReranker/AdvancedFilter) + `internal/multimodal` (DescribeImage/EmbedImageText/ClassifyDiagram/ParseTableText+SummarizeTable/ExtractMathExpressions+NormalizeMath) + `internal/analytics` (TopicMastery/HistoricalAccuracy/DifficultyStats/TimePerQuestion/ExamReadinessScore) + `internal/study` (BuildStudyGuide Topic→Explanation→Example→PYQs→Quiz reusing quiz.BuildOriginalQuiz) with `internal/http/analytics.go` (`/api/v1/analytics/mastery|history|difficulty|timing|readiness`), `internal/http/study.go` (`/api/v1/study/guide` GET+POST), routes in `internal/http/router.go`, `lib/api.ts` analytics+study clients, `pages/study.tsx` Study Mode UI; `go vet ./...`, `go test ./... -count=1` and `npm run build` pass.
 
 ---
 

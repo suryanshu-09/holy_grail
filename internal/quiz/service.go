@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/suryanshu-09/holy_grail/internal/multimodal"
 	"github.com/suryanshu-09/holy_grail/internal/questions"
 	"github.com/suryanshu-09/holy_grail/internal/search"
 )
@@ -554,6 +555,26 @@ func BuildOriginalQuiz(sources []questions.Question) QuizResponse {
 				expl = expl + " " + fig
 			}
 		}
+		// Multimodal enrichment (pure): surface math expressions found in
+		// the stem so figure/formula-dependent questions stay reviewable.
+		// Capped to two short expressions to respect MaxExplanationLen.
+		if exprs := multimodal.ExtractMathExpressions(questionText(q)); len(exprs) > 0 {
+			shown := make([]string, 0, 2)
+			for _, e := range exprs {
+				if n := multimodal.NormalizeMath(e); n != "" {
+					if len(n) > 120 {
+						n = n[:117] + "..."
+					}
+					shown = append(shown, n)
+				}
+				if len(shown) == 2 {
+					break
+				}
+			}
+			if len(shown) > 0 {
+				expl = expl + " Math expression(s): " + strings.Join(shown, "; ") + "."
+			}
+		}
 		out = append(out, QuizQuestion{
 			ID:               "quiz-" + q.ID,
 			SourceQuestionID: q.ID,
@@ -593,6 +614,15 @@ func fallbackFigureHint(imagesJSON string) string {
 			label = fmt.Sprintf("%s (%s)", img.Name, img.FigureType)
 		} else if img.Description != "" {
 			label = fmt.Sprintf("%s: %s", img.Name, img.Description)
+		}
+		// Multimodal enrichment (pure): append the heuristic diagram
+		// sub-kind when it adds information beyond the stored figure
+		// type. It is appended after the description so the legacy
+		// "<name> (<figure_type>): <description>" prefix is preserved.
+		if kind := multimodal.ClassifyDiagram(img.FigureType, img.Name, img.Description); kind != "" &&
+			kind != multimodal.DiagramKindUnknown &&
+			!strings.EqualFold(kind, strings.TrimSpace(img.FigureType)) {
+			label = label + " [kind: " + kind + "]"
 		}
 		parts = append(parts, "[Figure: "+label+"]")
 	}

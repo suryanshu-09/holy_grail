@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/suryanshu-09/holy_grail/internal/documents"
+	"github.com/suryanshu-09/holy_grail/internal/multimodal"
 	"github.com/suryanshu-09/holy_grail/internal/questions"
 )
 
@@ -926,6 +927,39 @@ func appendVisualNotes(notes []string, details []ImageRef) []string {
 	}
 	for _, t := range ordered {
 		add("visual:figure-" + t)
+	}
+	// Multimodal enrichment (pure): heuristic diagram sub-kinds
+	// (flowchart, circuit, graph, chart, table, geometry, network,
+	// timeline) from figure_type/name/description keywords. Only
+	// specific sub-kinds are recorded; passthrough labels (e.g. photo)
+	// and unknown add no note.
+	kinds := make(map[string]bool)
+	for _, d := range details {
+		switch k := multimodal.ClassifyDiagram(d.FigureType, d.Name, d.Description); k {
+		case multimodal.DiagramKindFlowchart,
+			multimodal.DiagramKindCircuit,
+			multimodal.DiagramKindGraph,
+			multimodal.DiagramKindChart,
+			multimodal.DiagramKindTable,
+			multimodal.DiagramKindGeometry,
+			multimodal.DiagramKindNetwork,
+			multimodal.DiagramKindTimeline:
+			kinds[k] = true
+		}
+	}
+	orderedKinds := make([]string, 0, len(kinds))
+	for k := range kinds {
+		orderedKinds = append(orderedKinds, k)
+	}
+	for a := 0; a < len(orderedKinds); a++ {
+		for b := a + 1; b < len(orderedKinds); b++ {
+			if orderedKinds[b] < orderedKinds[a] {
+				orderedKinds[a], orderedKinds[b] = orderedKinds[b], orderedKinds[a]
+			}
+		}
+	}
+	for _, k := range orderedKinds {
+		add("visual:diagram-" + k)
 	}
 	described := 0
 	for _, d := range details {
